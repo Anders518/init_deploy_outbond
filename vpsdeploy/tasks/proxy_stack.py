@@ -14,10 +14,11 @@ from vpsdeploy.templates.render import render_caddy, render_compose
 
 
 _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
+_XUI_CLI_CANDIDATES = ('/app/x-ui', 'x-ui')
 
 
 def _random_password(length: int = 28) -> str:
-    alphabet = string.ascii_letters + string.digits + '-_@%+=' 
+    alphabet = string.ascii_letters + string.digits + '-_@%+='
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
@@ -68,7 +69,7 @@ class ProxyStackTask(Task):
         xui = _xui_config(panel)
         for label, username in (
             ('Caddy BasicAuth', str(panel.get('basic_auth_user', 'admin')).strip()),
-            ('3x-ui', str(xui.get('username', 'admin')).strip()),
+            ('3x-ui', str(xui.get('username', 'xui-admin')).strip()),
         ):
             if not username or any(char.isspace() for char in username):
                 raise DeployError(f'{label} username cannot be empty or contain whitespace')
@@ -78,6 +79,15 @@ class ProxyStackTask(Task):
         ):
             if mode not in _PASSWORD_MODES:
                 raise DeployError(f'{label} password mode must be one of: {sorted(_PASSWORD_MODES)}')
+        if (
+            str(xui.get('username', 'xui-admin')) == 'admin'
+            and str(xui.get('password', '')) == 'admin'
+            and not bool(xui.get('allow_default_credentials', False))
+        ):
+            raise DeployError(
+                'Refusing the default 3x-ui admin/admin credentials. '
+                'Choose another password or explicitly set panel.xui.allow_default_credentials=true.'
+            )
 
     def apply(self, context: DeploymentContext) -> None:
         stack = context.stack_dir
@@ -119,6 +129,12 @@ class ProxyStackTask(Task):
                 env_name=str(xui.get('password_env', 'VPSDEPLOY_XUI_PASSWORD')),
                 existing=existing_xui,
             )
+            if (
+                str(xui.get('username', 'xui-admin')) == 'admin'
+                and xui_password == 'admin'
+                and not bool(xui.get('allow_default_credentials', False))
+            ):
+                raise DeployError('Refusing to configure insecure default 3x-ui credentials admin/admin')
 
         env = [
             f"TZ={stack_cfg.get('timezone', 'UTC')}",
@@ -149,17 +165,16 @@ class ProxyStackTask(Task):
         run(['docker', 'compose', 'pull', '3x-ui'], cwd=stack)
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
 
-        # A bind-mounted Caddyfile can change without Compose recreating the
-        # container. Explicitly validate and reload it so the running process
-        # always uses the newly generated BasicAuth hash.
         self._reload_caddy()
         self._verify_basic_auth(context, str(panel.get('basic_auth_user', 'admin')), caddy_password)
 
+        resolved_xui_cli = ''
         if bool(xui.get('enabled', True)):
-            self._configure_xui(
-                str(xui.get('username', 'admin')),
+            resolved_xui_cli = self._configure_xui(
+                str(xui.get('username', 'xui-admin')),
                 xui_password,
-                str(xui.get('cli', 'x-ui')),
+                str(xui.get('cli', 'auto')),
+                bool(xui.get('allow_default_credentials', False)),
             )
 
         credentials = {
@@ -170,8 +185,9 @@ class ProxyStackTask(Task):
             },
             'xui': {
                 'enabled': bool(xui.get('enabled', True)),
-                'username': str(xui.get('username', 'admin')),
+                'username': str(xui.get('username', 'xui-admin')),
                 'password': xui_password if bool(xui.get('enabled', True)) else '',
+                'cli': resolved_xui_cli,
             },
         }
         write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
@@ -187,20 +203,20 @@ class ProxyStackTask(Task):
             'path': str(credentials_path),
         }
 
-    def _reload_caddy(self) -> None:
-        timeout = 30
+    def _wait_container(self, name: str, timeout: int = 30) -> None:
         for _ in range(timeout):
             result = run(
-                ['docker', 'inspect', '-f', '{{.State.Running}}', 'caddy-panel'],
+                ['docker', 'inspect', '-f', '{{.State.Running}}', name],
                 check=False,
                 capture=True,
             )
             if result.returncode == 0 and result.stdout.strip() == 'true':
-                break
+                return
             time.sleep(1)
-        else:
-            raise DeployError('Caddy container did not become ready')
+        raise DeployError(f'{name} container did not become ready')
 
+    def _reload_caddy(self) -> None:
+        self._wait_container('caddy-panel')
         run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
         run([
             'docker', 'exec', 'caddy-panel', 'caddy', 'reload',
@@ -240,27 +256,69 @@ class ProxyStackTask(Task):
                 f'HTTP {status or "unknown"}. {detail}'
             )
 
-    def _configure_xui(self, username: str, password: str, cli: str) -> None:
-        timeout = 30
-        for _ in range(timeout):
-            result = run(['docker', 'inspect', '-f', '{{.State.Running}}', '3x-ui'], check=False, capture=True)
-            if result.returncode == 0 and result.stdout.strip() == 'true':
-                break
-            time.sleep(1)
-        else:
-            raise DeployError('3x-ui container did not become ready')
+    def _resolve_xui_cli(self, configured: str) -> str:
+        candidates = _XUI_CLI_CANDIDATES if configured in {'', 'auto'} else (configured,)
+        for candidate in candidates:
+            probe = run(
+                ['docker', 'exec', '3x-ui', 'sh', '-c', f'test -x {candidate} || command -v {candidate} >/dev/null 2>&1'],
+                check=False,
+                capture=True,
+            )
+            if probe.returncode == 0:
+                return candidate
+        raise DeployError(
+            'Unable to locate the 3x-ui CLI in the container. '
+            f'Tried: {", ".join(candidates)}. Set panel.xui.cli explicitly.'
+        )
+
+    def _show_xui_settings(self, cli: str) -> str:
+        result = run(
+            ['docker', 'exec', '3x-ui', cli, 'setting', '-show'],
+            check=False,
+            capture=True,
+        )
+        output = '\n'.join(part for part in (result.stdout, result.stderr) if part).strip()
+        if result.returncode != 0:
+            raise DeployError(f'Failed to read 3x-ui settings with {cli!r}: {output}')
+        return output
+
+    def _configure_xui(self, username: str, password: str, configured_cli: str,
+                       allow_default_credentials: bool) -> str:
+        self._wait_container('3x-ui')
+        cli = self._resolve_xui_cli(configured_cli)
 
         result = run([
             'docker', 'exec', '3x-ui', cli, 'setting',
             '-username', username, '-password', password,
         ], check=False, capture=True)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
+        output = '\n'.join(part for part in (result.stdout, result.stderr) if part).strip()
+        if result.returncode != 0 or 'Username and password updated successfully' not in output:
             raise DeployError(
-                f'Failed to configure 3x-ui credentials with {cli!r}: {detail}. '
-                'Set panel.xui.cli to the executable available in the container.'
+                f'3x-ui rejected the credential update with {cli!r}: {output or "no output"}. '
+                'The CLI may have returned success while the application-level update failed.'
             )
+
+        before_restart = self._show_xui_settings(cli)
+        if 'hasDefaultCredential: true' in before_restart and not allow_default_credentials:
+            raise DeployError(
+                '3x-ui still reports hasDefaultCredential=true after the credential update; '
+                'credentials.json was not written. Check the mounted database and CLI path.'
+            )
+
         run(['docker', 'restart', '3x-ui'])
+        self._wait_container('3x-ui')
+        time.sleep(2)
+        after_restart = self._show_xui_settings(cli)
+        if 'hasDefaultCredential: true' in after_restart and not allow_default_credentials:
+            raise DeployError(
+                '3x-ui reverted to the default admin/admin credentials after restart. '
+                'Check /etc/x-ui volume persistence and database permissions.'
+            )
+        if 'port:' not in after_restart or 'webBasePath:' not in after_restart:
+            raise DeployError(f'Unexpected 3x-ui setting output after restart: {after_restart}')
+
+        print(f'[xui] credentials updated and verified with CLI {cli}')
+        return cli
 
     def verify(self, context: DeploymentContext) -> None:
         run(['docker', 'compose', 'ps'], cwd=context.stack_dir)
