@@ -47,6 +47,31 @@ enable_ipv6 = true
 ipv6_subnet = ""
 force_rebuild_caddy = false
 
+[dns]
+enabled = false
+provider = "cloudflare"
+# Prefer CLOUDFLARE_DNS_API_TOKEN instead of storing a token here.
+api_token = ""
+auto_detect_addresses = true
+create_ipv4 = true
+create_ipv6 = true
+# 1 means Cloudflare automatic TTL.
+ttl = 1
+# Optional fixed addresses. Leave empty to detect from the VPS.
+ipv4_address = ""
+ipv6_address = ""
+ipv4_detection_url = "https://api4.ipify.org"
+ipv6_detection_url = "https://api6.ipify.org"
+
+[dns.panel]
+enabled = true
+proxied = true
+
+[dns.node]
+enabled = true
+# Reality nodes must remain DNS only.
+proxied = false
+
 [hardening]
 enabled = false
 
@@ -75,7 +100,6 @@ max_retry = 5
 find_time = "10m"
 ban_time = "1h"
 ignore_ips = []
-# Wait for fail2ban-client ping to return pong after service restart.
 readiness_timeout = 15
 readiness_interval = 1.0
 
