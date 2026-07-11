@@ -35,6 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def print_sensitive_results(context: DeploymentContext) -> None:
+    password = context.state.get('generated_admin_password')
+    username = context.state.get('generated_admin_user')
+    if password and username:
+        print('\n============================================================')
+        print('Generated sudo password — shown once; store it securely')
+        print('============================================================')
+        print(f'User: {username}')
+        print(f'Password: {password}')
+        print('SSH password authentication remains disabled; this password is for sudo only.')
+
+
 def main() -> int:
     args = build_parser().parse_args()
     try:
@@ -42,6 +54,7 @@ def main() -> int:
         context = DeploymentContext(config=config, dry_run=args.dry_run)
         if args.command == 'deploy':
             deploy(context, set(args.tasks or []))
+            print_sensitive_results(context)
         elif args.command == 'status':
             status(context)
         elif args.command == 'update':
