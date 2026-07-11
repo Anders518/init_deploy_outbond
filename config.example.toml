@@ -75,6 +75,9 @@ max_retry = 5
 find_time = "10m"
 ban_time = "1h"
 ignore_ips = []
+# Wait for fail2ban-client ping to return pong after service restart.
+readiness_timeout = 15
+readiness_interval = 1.0
 
 [hardening.unattended_upgrades]
 enabled = true
