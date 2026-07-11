@@ -17,7 +17,7 @@ _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
 
 
 def _random_password(length: int = 28) -> str:
-    alphabet = string.ascii_letters + string.digits + '-_@%+='
+    alphabet = string.ascii_letters + string.digits + '-_@%+=' 
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
@@ -149,6 +149,12 @@ class ProxyStackTask(Task):
         run(['docker', 'compose', 'pull', '3x-ui'], cwd=stack)
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
 
+        # A bind-mounted Caddyfile can change without Compose recreating the
+        # container. Explicitly validate and reload it so the running process
+        # always uses the newly generated BasicAuth hash.
+        self._reload_caddy()
+        self._verify_basic_auth(context, str(panel.get('basic_auth_user', 'admin')), caddy_password)
+
         if bool(xui.get('enabled', True)):
             self._configure_xui(
                 str(xui.get('username', 'admin')),
@@ -180,6 +186,59 @@ class ProxyStackTask(Task):
             'xui': xui_generated,
             'path': str(credentials_path),
         }
+
+    def _reload_caddy(self) -> None:
+        timeout = 30
+        for _ in range(timeout):
+            result = run(
+                ['docker', 'inspect', '-f', '{{.State.Running}}', 'caddy-panel'],
+                check=False,
+                capture=True,
+            )
+            if result.returncode == 0 and result.stdout.strip() == 'true':
+                break
+            time.sleep(1)
+        else:
+            raise DeployError('Caddy container did not become ready')
+
+        run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
+        run([
+            'docker', 'exec', 'caddy-panel', 'caddy', 'reload',
+            '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile',
+        ])
+
+    def _verify_basic_auth(self, context: DeploymentContext, username: str, password: str) -> None:
+        domains = section(context.config, 'domains')
+        ports = section(context.config, 'ports')
+        panel = section(context.config, 'panel')
+        hostname = str(domains['panel'])
+        port = int(ports['panel_public'])
+        path = str(panel.get('path', '/')) or '/'
+        url = f'https://{hostname}:{port}{path}'
+        resolve = f'{hostname}:{port}:127.0.0.1'
+
+        unauthenticated = run([
+            'curl', '--silent', '--show-error', '--insecure', '--resolve', resolve,
+            '--output', '/dev/null', '--write-out', '%{http_code}', url,
+        ], check=False, capture=True)
+        if unauthenticated.stdout.strip() != '401':
+            raise DeployError(
+                'Caddy BasicAuth verification failed: an unauthenticated request '
+                f'returned HTTP {unauthenticated.stdout.strip() or "unknown"}, expected 401'
+            )
+
+        authenticated = run([
+            'curl', '--silent', '--show-error', '--insecure', '--resolve', resolve,
+            '--user', f'{username}:{password}', '--output', '/dev/null',
+            '--write-out', '%{http_code}', url,
+        ], check=False, capture=True)
+        status = authenticated.stdout.strip()
+        if authenticated.returncode != 0 or status in {'', '401', '403'}:
+            detail = (authenticated.stderr or '').strip()
+            raise DeployError(
+                'Caddy BasicAuth verification failed with the configured credentials: '
+                f'HTTP {status or "unknown"}. {detail}'
+            )
 
     def _configure_xui(self, username: str, password: str, cli: str) -> None:
         timeout = 30
