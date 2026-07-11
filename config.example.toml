@@ -25,28 +25,26 @@ publish_proxy_udp = false
 path = "/"
 subscription_path = "/sub"
 basic_auth_user = "admin"
-# Leave empty to generate a random password in /opt/proxy-stack/secrets.txt.
 basic_auth_password = ""
-# Optional Caddy-level source CIDR allowlist for the panel path.
 allowed_cidrs = []
 
 [panel.tls]
-# Recommended: Cloudflare Proxy + Origin CA certificate.
-# Alternatives: "cloudflare_origin" or "acme_dns".
 mode = "cloudflare_origin"
-# Keep the private key outside this Git repository.
+# Automatic issuance uses CLOUDFLARE_ORIGIN_CA_TOKEN and writes the key only to the VPS.
+auto_create = true
+validity_days = 5475
+force_reissue = false
+api_token = ""
+# Used only when auto_create = false.
 certificate_file = "/root/cloudflare-origin.crt"
 private_key_file = "/root/cloudflare-origin.key"
 
 [docker]
 xui_image = "ghcr.io/mhsanaei/3x-ui:latest"
-# Standard image is sufficient for cloudflare_origin mode.
 caddy_image = "caddy:2-alpine"
 network_name = "proxy_stack"
 enable_ipv6 = true
-# Leave empty to let Docker select a non-conflicting IPv6 subnet.
 ipv6_subnet = ""
-# Applies only to acme_dns mode.
 force_rebuild_caddy = false
 
 [hardening]
