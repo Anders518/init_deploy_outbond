@@ -24,9 +24,29 @@ publish_proxy_udp = false
 [panel]
 path = "/"
 subscription_path = "/sub"
-basic_auth_user = "admin"
-basic_auth_password = ""
 allowed_cidrs = []
+
+# Caddy BasicAuth protects the reverse-proxy entry before 3x-ui.
+# password_mode: "prompt", "generate", "config", or "environment".
+basic_auth_user = "admin"
+basic_auth_password_mode = "prompt"
+# Used only with password_mode = "config". Do not commit real passwords.
+basic_auth_password = ""
+# Used only with password_mode = "environment".
+basic_auth_password_env = "VPSDEPLOY_CADDY_PASSWORD"
+
+[panel.xui]
+# Configure the 3x-ui application login after the container starts.
+enabled = true
+username = "admin"
+# password_mode: "prompt", "generate", "config", or "environment".
+password_mode = "prompt"
+# Used only with password_mode = "config". Do not commit real passwords.
+password = ""
+# Used only with password_mode = "environment".
+password_env = "VPSDEPLOY_XUI_PASSWORD"
+# CLI executable inside the official container.
+cli = "x-ui"
 
 [panel.tls]
 mode = "cloudflare_origin"
