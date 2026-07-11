@@ -11,9 +11,23 @@ class DeployError(RuntimeError):
     pass
 
 
-def run(command: list[str], *, check: bool = True, capture: bool = False, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str],
+    *,
+    check: bool = True,
+    capture: bool = False,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     print('$', shlex.join(command))
-    return subprocess.run(command, check=check, text=True, capture_output=capture, cwd=cwd)
+    return subprocess.run(
+        command,
+        check=check,
+        text=True,
+        capture_output=capture,
+        cwd=cwd,
+        input=input_text,
+    )
 
 
 def section(config: dict[str, Any], dotted: str) -> dict[str, Any]:
