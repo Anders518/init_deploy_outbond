@@ -83,6 +83,18 @@ create_admin_user = true
 admin_user = "deploy"
 copy_root_authorized_keys = true
 grant_sudo = true
+
+# Sudo requires the deploy user's password; passwordless sudo is not used.
+# Options:
+#   "prompt"   - securely ask twice during deployment (recommended)
+#   "generate" - generate a strong password and print it once at successful exit
+#   "hash"     - read a password hash from admin_password_hash or
+#                VPSDEPLOY_ADMIN_PASSWORD_HASH
+admin_password_mode = "prompt"
+admin_password_hash = ""
+# VPSDEPLOY_ADMIN_PASSWORD may provide plaintext temporarily through the environment.
+
+# SSH remains key-only even though the local user has a password for sudo.
 disable_root_login = false
 disable_password_auth = true
 allow_users = ["root", "deploy"]
