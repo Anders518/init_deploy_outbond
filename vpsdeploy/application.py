@@ -3,6 +3,7 @@ from __future__ import annotations
 from vpsdeploy.core.runtime import DeploymentContext, run, section
 from vpsdeploy.tasks.certificates import CertificateTask
 from vpsdeploy.tasks.diagnostics import DiagnosticsTask
+from vpsdeploy.tasks.dns_records import DNSRecordsTask
 from vpsdeploy.tasks.fail2ban import Fail2BanTask
 from vpsdeploy.tasks.prerequisites import PrerequisitesTask
 from vpsdeploy.tasks.proxy_stack import ProxyStackTask
@@ -13,6 +14,7 @@ from vpsdeploy.tasks.unattended_upgrades import UnattendedUpgradesTask
 
 DEPLOY_TASKS = [
     PrerequisitesTask(),
+    DNSRecordsTask(),
     CertificateTask(),
     ProxyStackTask(),
     SSHHardeningTask(),
@@ -35,7 +37,7 @@ def status(context: DeploymentContext) -> None:
 
 def update(context: DeploymentContext) -> None:
     stack = context.stack_dir
-    run(['docker', 'compose', 'pull'], cwd=stack)
-    run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
-    if bool(section(context.config, 'stack').get('prune_dangling_images', True)):
-        run(['docker', 'image', 'prune', '-f'])
+    run(["docker", "compose", "pull"], cwd=stack)
+    run(["docker", "compose", "up", "-d", "--remove-orphans"], cwd=stack)
+    if bool(section(context.config, "stack").get("prune_dangling_images", True)):
+        run(["docker", "image", "prune", "-f"])
