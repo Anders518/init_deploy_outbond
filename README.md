@@ -1,123 +1,205 @@
 # init_deploy_outbond
 
-A standard-library-only Python deployment tool for a small VPS proxy stack:
+用于 Debian/Ubuntu VPS 的 Python 部署工具，部署以下结构：
 
-- 3x-ui / Xray in Docker bridge mode
-- VLESS Reality entry point reserved on TCP 443 by default
-- Caddy panel reverse proxy on TCP 8443
-- Cloudflare DNS-01 certificates; no HTTP-01 port required
-- Separate internal 3x-ui panel and subscription services
-- Optional Docker IPv6 networking
-- Optional SSH, Fail2Ban, unattended-upgrades and sysctl hardening
-- Configuration backups and idempotent Caddy image builds
+```text
+公网 443/tcp
+  └─ 3x-ui / Xray / VLESS Reality
 
-## Important security notes
+公网 8443/tcp
+  └─ Caddy
+       ├─ 面板路径 → BasicAuth → 3x-ui:2053
+       └─ /sub/*   → 3x-ui:2096
+```
 
-Do not commit `config.toml`, `.env`, `secrets.txt`, Cloudflare tokens, UUIDs, Reality private keys or Short IDs.
+支持：
 
-The generated runtime state is stored under `/opt/proxy-stack` by default. The Cloudflare token is written to `/opt/proxy-stack/.env` with mode `0600` because Caddy needs it at runtime.
+- Docker Compose bridge 网络
+- Docker IPv6
+- Cloudflare Proxy + Origin CA 长期证书
+- 可选 Cloudflare DNS-01 ACME 模式
+- 可选 SSH 端口修改与密钥登录加固
+- 可选普通管理用户、Fail2Ban、自动安全更新和 sysctl 加固
+- 部署前配置备份
 
-SSH hardening is disabled by default. Keep the current SSH session open and test a second session before disabling root login or removing the old firewall rule.
+## 安全说明
 
-## Requirements
+不要提交以下内容：
 
-- Debian or Ubuntu
+- `config.toml`
+- Cloudflare API Token
+- Cloudflare Origin CA 私钥
+- Reality 私钥、UUID、Short ID
+- `/opt/proxy-stack/secrets.txt`
+
+仓库已经通过 `.gitignore` 排除常见证书、密钥和运行配置文件。
+
+## 环境要求
+
+- Debian 或 Ubuntu
 - Python 3.11+
-- Root privileges
-- A Cloudflare-managed DNS zone
-- A Cloudflare API token restricted to the required zone with:
-  - Zone / Zone / Read
-  - Zone / DNS / Edit
+- root 权限
+- Docker；也可以由脚本自动安装
+- Cloudflare 托管的域名
 
-## Quick start
+## 推荐 TLS 模式：Cloudflare Origin CA
+
+访问链路：
+
+```text
+浏览器
+  → Cloudflare 公网证书
+  → Cloudflare Proxy
+  → Cloudflare Origin CA 证书
+  → Caddy:8443
+```
+
+该模式不需要：
+
+- Cloudflare DNS API Token
+- Caddy Cloudflare DNS 插件
+- 自定义 Caddy 镜像
+- ACME 自动签发和续期
+
+注意：Cloudflare Origin CA 证书只用于 Cloudflare 到源站。直接访问 VPS 或将面板记录切换为 DNS only 时，浏览器不会信任该证书。
+
+### Cloudflare 配置
+
+面板域名：
+
+```text
+panel.example.net  A/AAAA  VPS 地址  Proxied（橙云）
+```
+
+SSL/TLS 模式设置为：
+
+```text
+Full (strict)
+```
+
+Reality 节点域名必须保持：
+
+```text
+node.example.net  A/AAAA  VPS 地址  DNS only
+```
+
+### 创建 Origin CA 证书
+
+在 Cloudflare 控制台为面板域名创建 Origin CA 证书，将证书和私钥保存到 VPS：
+
+```bash
+sudo install -d -m 700 /root/cloudflare-origin
+sudo nano /root/cloudflare-origin/origin.crt
+sudo nano /root/cloudflare-origin/origin.key
+sudo chmod 600 /root/cloudflare-origin/origin.key
+```
+
+配置：
+
+```toml
+[panel.tls]
+mode = "cloudflare_origin"
+certificate_file = "/root/cloudflare-origin/origin.crt"
+private_key_file = "/root/cloudflare-origin/origin.key"
+
+[docker]
+caddy_image = "caddy:2-alpine"
+```
+
+部署时，脚本会把证书复制到：
+
+```text
+/opt/proxy-stack/secrets/cloudflare-origin.crt
+/opt/proxy-stack/secrets/cloudflare-origin.key
+```
+
+私钥权限会设为 `0600`，并以只读方式挂载到 Caddy 容器。
+
+## 快速部署
 
 ```bash
 git clone https://github.com/Anders518/init_deploy_outbond.git
 cd init_deploy_outbond
 cp config.example.toml config.toml
 nano config.toml
-sudo CLOUDFLARE_API_TOKEN='your-token' python3 deploy.py deploy
+sudo python3 deploy.py deploy
 ```
 
-Using an environment variable is preferable to storing the token in `config.toml`.
-
-## Recommended DNS records
-
-Use separate hostnames:
-
-```text
-panel.example.net  A/AAAA  VPS address
-node.example.net   A/AAAA  VPS address, DNS only
-```
-
-The Reality node hostname must not be proxied through Cloudflare. Only create an AAAA record when the VPS IPv6 route and inbound firewall are working.
-
-## Port model
-
-Default configuration:
-
-```text
-443/tcp   Public VLESS Reality entry point
-8443/tcp  Public Caddy HTTPS panel and subscription entry point
-2053/tcp  Internal 3x-ui panel; never publish to the host
-2096/tcp  Internal subscription service; never publish to the host
-80/tcp    Not required because certificates use DNS-01
-```
-
-The VPS provider firewall should allow only the configured SSH port, proxy port and panel public port. Apply equivalent IPv4 and IPv6 rules where required.
-
-## Commands
-
-Deploy or reconcile generated configuration:
-
-```bash
-sudo CLOUDFLARE_API_TOKEN='your-token' python3 deploy.py deploy
-```
-
-Show stack, listening-port and Docker network state:
+查看状态：
 
 ```bash
 sudo python3 deploy.py status
 ```
 
-Update 3x-ui and reconcile containers:
+更新容器：
 
 ```bash
 sudo python3 deploy.py update
 ```
 
-To rebuild Caddy with the latest Cloudflare module, set:
+## 可选 DNS-01 模式
+
+需要浏览器直接访问源站，或者不希望依赖 Cloudflare Proxy 时，可以使用：
 
 ```toml
+[panel.tls]
+mode = "acme_dns"
+
 [docker]
-force_rebuild_caddy = true
+caddy_image = "local/caddy-cloudflare:latest"
 ```
 
-Then run `deploy` or `update`. Normal runs reuse the existing custom Caddy image.
+运行：
 
-## First 3x-ui configuration
+```bash
+sudo CLOUDFLARE_API_TOKEN='your-token' python3 deploy.py deploy
+```
 
-Configure the panel:
+该模式会构建包含 `caddy-dns/cloudflare` 的自定义 Caddy 镜像。
+
+## 端口规划
+
+默认端口：
 
 ```text
-Listen IP: blank or 0.0.0.0
+443/tcp   VLESS Reality
+8443/tcp  Cloudflare 到 Caddy 的 HTTPS 入口
+2053/tcp  3x-ui 面板内部端口，不发布到宿主机
+2096/tcp  订阅内部端口，不发布到宿主机
+```
+
+VPS 防火墙建议只开放：
+
+```text
+SSH 端口
+443/tcp
+8443/tcp
+```
+
+使用 Cloudflare Proxy 后，最好进一步把 `8443/tcp` 的来源限制为 Cloudflare IP 段，防止绕过 Cloudflare 直接访问源站。Cloudflare IP 段会变化，因此应通过独立维护流程定期同步，不建议在部署脚本中硬编码。
+
+## 3x-ui 配置
+
+面板：
+
+```text
+Listen IP: 留空或 0.0.0.0
 Listen port: 2053
-URI path: must equal panel.path
-Trusted proxies: include the Docker bridge ranges used by your host
+URI path: 与 panel.path 一致
 ```
 
-Configure subscriptions:
+订阅：
 
 ```text
-Listen IP: blank or 0.0.0.0
+Listen IP: 留空或 0.0.0.0
 Internal port: 2096
-URI path: must equal panel.subscription_path
+URI path: 与 panel.subscription_path 一致
 External scheme: https
-External domain: the panel hostname
+External domain: 面板域名
 External port: 8443
 ```
 
-Configure the initial Reality inbound:
+Reality inbound：
 
 ```text
 Protocol: VLESS
@@ -128,11 +210,13 @@ Flow: xtls-rprx-vision
 Encryption/decryption: none
 ```
 
-The subscription route is intentionally not protected by Caddy BasicAuth because most clients cannot supply interactive BasicAuth credentials when refreshing subscriptions. The panel route remains protected by BasicAuth and 3x-ui's own login.
+订阅路径默认不使用 Caddy BasicAuth，因为多数客户端更新订阅时无法处理交互式 BasicAuth。面板路径仍由 Caddy BasicAuth 和 3x-ui 自身认证双重保护。
 
-## Optional hardening
+## SSH 加固
 
-Enable features selectively in `config.toml`:
+加固默认关闭。建议分两次执行，避免锁死 SSH。
+
+首次：
 
 ```toml
 [hardening]
@@ -140,68 +224,50 @@ enabled = true
 
 [hardening.ssh]
 enabled = true
-current_port = 22
-new_port = 4522
+current_port = 4522
+new_port = 62222
 create_admin_user = true
 admin_user = "deploy"
 disable_root_login = false
+disable_password_auth = true
 allow_users = ["root", "deploy"]
 ```
 
-Recommended two-stage SSH migration:
+先在云厂商防火墙放行新端口，并保持当前 SSH 会话。部署后测试：
 
-1. Allow the new SSH port in the VPS provider firewall.
-2. Keep the existing SSH session open.
-3. First deploy with `disable_root_login = false` and both users in `allow_users`.
-4. Test a new session:
+```bash
+ssh -p 62222 deploy@SERVER
+sudo whoami
+```
 
-   ```bash
-   ssh -p 4522 deploy@SERVER
-   sudo whoami
-   ```
+确认成功后再设置：
 
-5. After successful verification, set:
+```toml
+disable_root_login = true
+allow_users = ["deploy"]
+```
 
-   ```toml
-   disable_root_login = true
-   allow_users = ["deploy"]
-   ```
-
-6. Run deploy again, test a new session, then remove the old SSH port from the provider firewall.
-
-The script supports Ubuntu `ssh.socket` activation and validates SSH configuration with `sshd -t` before reloading it.
-
-### Fail2Ban
-
-Fail2Ban can protect the configured SSH port. It uses the system firewall locally and can coexist with a provider-level firewall.
-
-### Automatic updates
-
-Unattended security updates are optional. Automatic reboot is disabled by default to avoid unplanned proxy downtime.
-
-### sysctl
-
-The optional sysctl profile disables source routing and redirects and enables conservative kernel protections. It does not disable IPv6 forwarding, which may be needed for Docker IPv6 egress.
+重新执行部署并再次测试，最后删除旧 SSH 端口的防火墙规则。
 
 ## Docker IPv6
 
-`docker.enable_ipv6 = true` enables IPv6 on the Compose network. Docker Engine and the host must also have suitable IPv6 forwarding/routing configuration.
-
-Leaving `docker.ipv6_subnet` empty avoids hard-coded subnet collisions on newer Docker versions. If your Docker version requires an explicit subnet, choose an unused ULA `/64`, for example:
-
 ```toml
-ipv6_subnet = "fd42:7c31:9a80:100::/64"
+[docker]
+enable_ipv6 = true
+ipv6_subnet = ""
 ```
 
-Inspect existing Docker subnets before selecting one:
+空子网表示让 Docker 自动选择可用网段。如果当前 Docker 版本要求显式子网，可设置一个未使用的 ULA `/64`。
+
+宿主机 IPv6 正常不代表容器 IPv6 一定正常。可检查：
 
 ```bash
-docker network inspect $(docker network ls -q) | grep -E '"Name"|"Subnet"|"EnableIPv6"'
+docker exec 3x-ui ip -6 addr
+docker exec 3x-ui ip -6 route
+docker exec 3x-ui curl -6 https://api64.ipify.org
 ```
 
-## Generated files
-
-By default, deployment generates:
+## 生成目录
 
 ```text
 /opt/proxy-stack/
@@ -209,26 +275,25 @@ By default, deployment generates:
 ├── Caddyfile
 ├── docker-compose.yml
 ├── secrets.txt
+├── secrets/
+│   ├── cloudflare-origin.crt
+│   └── cloudflare-origin.key
 ├── backups/
-├── caddy-build/
 ├── caddy/
 └── 3x-ui/
 ```
 
-Existing generated configuration is archived before replacement. Persistent 3x-ui and Caddy data are not deleted during normal deployment or update operations.
-
-## Backup scope
-
-Back up at least:
+至少备份：
 
 ```text
 /opt/proxy-stack/3x-ui/db
 /opt/proxy-stack/caddy/data
+/opt/proxy-stack/secrets
 /opt/proxy-stack/Caddyfile
 /opt/proxy-stack/docker-compose.yml
 /opt/proxy-stack/.env
-/etc/docker/daemon.json
 /etc/ssh
+/etc/docker/daemon.json
 ```
 
-Encrypt backups because `.env`, Caddy ACME state and 3x-ui databases contain sensitive material.
+备份必须加密，因为其中包含证书私钥、面板凭据和 3x-ui 数据库。
