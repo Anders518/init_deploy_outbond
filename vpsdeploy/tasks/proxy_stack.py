@@ -17,7 +17,7 @@ _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
 
 
 def _random_password(length: int = 28) -> str:
-    alphabet = string.ascii_letters + string.digits + '-_@%+=' 
+    alphabet = string.ascii_letters + string.digits + '-_@%+='
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
@@ -53,21 +53,28 @@ def _resolve_password(*, label: str, mode: str, configured: str, env_name: str,
     return value, False
 
 
+def _xui_config(panel: dict[str, Any]) -> dict[str, Any]:
+    value = panel.get('xui', {})
+    if not isinstance(value, dict):
+        raise DeployError('panel.xui must be a TOML table')
+    return value
+
+
 class ProxyStackTask(Task):
     name = 'proxy-stack'
 
     def validate(self, context: DeploymentContext) -> None:
         panel = section(context.config, 'panel')
-        xui = section(context.config, 'panel.xui')
+        xui = _xui_config(panel)
         for label, username in (
-            ('Caddy BasicAuth', str(panel.get('basic_auth_user', '')).strip()),
-            ('3x-ui', str(xui.get('username', '')).strip()),
+            ('Caddy BasicAuth', str(panel.get('basic_auth_user', 'admin')).strip()),
+            ('3x-ui', str(xui.get('username', 'admin')).strip()),
         ):
             if not username or any(char.isspace() for char in username):
                 raise DeployError(f'{label} username cannot be empty or contain whitespace')
         for label, mode in (
-            ('Caddy BasicAuth', str(panel.get('basic_auth_password_mode', 'prompt'))),
-            ('3x-ui', str(xui.get('password_mode', 'prompt'))),
+            ('Caddy BasicAuth', str(panel.get('basic_auth_password_mode', 'generate'))),
+            ('3x-ui', str(xui.get('password_mode', 'generate'))),
         ):
             if mode not in _PASSWORD_MODES:
                 raise DeployError(f'{label} password mode must be one of: {sorted(_PASSWORD_MODES)}')
@@ -79,7 +86,7 @@ class ProxyStackTask(Task):
 
         tls = context.state['tls']
         panel = section(context.config, 'panel')
-        xui = section(context.config, 'panel.xui')
+        xui = _xui_config(panel)
         ports = section(context.config, 'ports')
         docker = section(context.config, 'docker')
         stack_cfg = section(context.config, 'stack')
@@ -89,7 +96,7 @@ class ProxyStackTask(Task):
         existing_caddy = str(existing.get('caddy', {}).get('password', ''))
         caddy_password, caddy_generated = _resolve_password(
             label='Caddy BasicAuth',
-            mode=str(panel.get('basic_auth_password_mode', 'prompt')),
+            mode=str(panel.get('basic_auth_password_mode', 'generate')),
             configured=str(panel.get('basic_auth_password', '')),
             env_name=str(panel.get('basic_auth_password_env', 'VPSDEPLOY_CADDY_PASSWORD')),
             existing=existing_caddy,
@@ -107,7 +114,7 @@ class ProxyStackTask(Task):
             existing_xui = str(existing.get('xui', {}).get('password', ''))
             xui_password, xui_generated = _resolve_password(
                 label='3x-ui',
-                mode=str(xui.get('password_mode', 'prompt')),
+                mode=str(xui.get('password_mode', 'generate')),
                 configured=str(xui.get('password', '')),
                 env_name=str(xui.get('password_env', 'VPSDEPLOY_XUI_PASSWORD')),
                 existing=existing_xui,
@@ -143,12 +150,16 @@ class ProxyStackTask(Task):
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
 
         if bool(xui.get('enabled', True)):
-            self._configure_xui(context, str(xui['username']), xui_password, str(xui.get('cli', 'x-ui')))
+            self._configure_xui(
+                str(xui.get('username', 'admin')),
+                xui_password,
+                str(xui.get('cli', 'x-ui')),
+            )
 
         credentials = {
             'panel_url': f"https://{section(context.config, 'domains')['panel']}:{ports['panel_public']}{panel.get('path', '/')}",
             'caddy': {
-                'username': str(panel['basic_auth_user']),
+                'username': str(panel.get('basic_auth_user', 'admin')),
                 'password': caddy_password,
             },
             'xui': {
@@ -170,7 +181,7 @@ class ProxyStackTask(Task):
             'path': str(credentials_path),
         }
 
-    def _configure_xui(self, context: DeploymentContext, username: str, password: str, cli: str) -> None:
+    def _configure_xui(self, username: str, password: str, cli: str) -> None:
         timeout = 30
         for _ in range(timeout):
             result = run(['docker', 'inspect', '-f', '{{.State.Running}}', '3x-ui'], check=False, capture=True)
