@@ -1,0 +1,79 @@
+[stack]
+install_dir = "/opt/proxy-stack"
+timezone = "UTC"
+install_docker = true
+prune_dangling_images = true
+
+[domains]
+panel = "panel.example.net"
+node = "node.example.net"
+acme_email = "admin@example.net"
+
+[cloudflare]
+# Prefer setting CLOUDFLARE_API_TOKEN in the environment instead of storing it here.
+api_token = ""
+
+[ports]
+proxy = 443
+panel_public = 8443
+panel_internal = 2053
+subscription_internal = 2096
+publish_proxy_udp = false
+
+[panel]
+path = "/"
+subscription_path = "/sub"
+basic_auth_user = "admin"
+# Leave empty to generate a random password. It will be written to secrets.txt.
+basic_auth_password = ""
+# Optional CIDRs allowed to reach the panel path. Empty means unrestricted.
+allowed_cidrs = []
+
+[docker]
+xui_image = "ghcr.io/mhsanaei/3x-ui:latest"
+caddy_image = "local/caddy-cloudflare:latest"
+network_name = "proxy_stack"
+enable_ipv6 = true
+# Leave empty to let Docker choose a non-conflicting IPv6 subnet.
+ipv6_subnet = ""
+force_rebuild_caddy = false
+
+[hardening]
+enabled = false
+
+[hardening.ssh]
+enabled = false
+current_port = 22
+new_port = 4522
+create_admin_user = true
+admin_user = "deploy"
+copy_root_authorized_keys = true
+grant_sudo = true
+disable_root_login = false
+disable_password_auth = true
+allow_users = ["root", "deploy"]
+disable_tcp_forwarding = false
+disable_agent_forwarding = true
+disable_x11_forwarding = true
+max_auth_tries = 3
+login_grace_time = 30
+client_alive_interval = 300
+client_alive_count_max = 2
+
+[hardening.fail2ban]
+enabled = true
+max_retry = 5
+find_time = "10m"
+ban_time = "1h"
+ignore_ips = []
+
+[hardening.unattended_upgrades]
+enabled = true
+automatic_reboot = false
+reboot_time = "04:30"
+
+[hardening.system]
+disable_apport = true
+enable_sysctl = true
+disable_redirects = true
+remove_admin_from_docker_group = true
