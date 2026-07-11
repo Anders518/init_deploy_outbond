@@ -7,10 +7,11 @@ prune_dangling_images = true
 [domains]
 panel = "panel.example.net"
 node = "node.example.net"
+# Required only when panel.tls.mode = "acme_dns".
 acme_email = "admin@example.net"
 
 [cloudflare]
-# Prefer setting CLOUDFLARE_API_TOKEN in the environment instead of storing it here.
+# Used only by acme_dns mode. Prefer CLOUDFLARE_API_TOKEN in the environment.
 api_token = ""
 
 [ports]
@@ -24,18 +25,28 @@ publish_proxy_udp = false
 path = "/"
 subscription_path = "/sub"
 basic_auth_user = "admin"
-# Leave empty to generate a random password. It will be written to secrets.txt.
+# Leave empty to generate a random password in /opt/proxy-stack/secrets.txt.
 basic_auth_password = ""
-# Optional CIDRs allowed to reach the panel path. Empty means unrestricted.
+# Optional Caddy-level source CIDR allowlist for the panel path.
 allowed_cidrs = []
+
+[panel.tls]
+# Recommended: Cloudflare Proxy + Origin CA certificate.
+# Alternatives: "cloudflare_origin" or "acme_dns".
+mode = "cloudflare_origin"
+# Keep the private key outside this Git repository.
+certificate_file = "/root/cloudflare-origin.crt"
+private_key_file = "/root/cloudflare-origin.key"
 
 [docker]
 xui_image = "ghcr.io/mhsanaei/3x-ui:latest"
-caddy_image = "local/caddy-cloudflare:latest"
+# Standard image is sufficient for cloudflare_origin mode.
+caddy_image = "caddy:2-alpine"
 network_name = "proxy_stack"
 enable_ipv6 = true
-# Leave empty to let Docker choose a non-conflicting IPv6 subnet.
+# Leave empty to let Docker select a non-conflicting IPv6 subnet.
 ipv6_subnet = ""
+# Applies only to acme_dns mode.
 force_rebuild_caddy = false
 
 [hardening]
