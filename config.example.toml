@@ -30,35 +30,26 @@ allowed_cidrs = []
 # password_mode: "prompt", "generate", "config", or "environment".
 basic_auth_user = "gateway-admin"
 basic_auth_password_mode = "prompt"
-# Used only with password_mode = "config". Do not commit real passwords.
 basic_auth_password = ""
-# Used only with password_mode = "environment".
 basic_auth_password_env = "VPSDEPLOY_CADDY_PASSWORD"
 
 [panel.xui]
-# Configure and verify the 3x-ui application login after the container starts.
 enabled = true
 username = "xui-admin"
-# password_mode: "prompt", "generate", "config", or "environment".
 password_mode = "prompt"
-# Used only with password_mode = "config". Do not commit real passwords.
 password = ""
-# Used only with password_mode = "environment".
 password_env = "VPSDEPLOY_XUI_PASSWORD"
-# "auto" prefers /app/x-ui and falls back to x-ui inside the container.
 cli = "auto"
-# The deployment fails if 3x-ui still reports admin/admin after configuration.
-# Enabling this is strongly discouraged and exists only for recovery/testing.
 allow_default_credentials = false
 
 [panel.tls]
 mode = "cloudflare_origin"
-# Automatic issuance uses CLOUDFLARE_ORIGIN_CA_TOKEN and writes the key only to the VPS.
 auto_create = true
 validity_days = 5475
 force_reissue = false
 api_token = ""
-# Used only when auto_create = false.
+# Leave empty to derive SANs from the panel and enabled Sub2API domains.
+hostnames = []
 certificate_file = "/root/cloudflare-origin.crt"
 private_key_file = "/root/cloudflare-origin.key"
 
@@ -73,14 +64,11 @@ force_rebuild_caddy = false
 [dns]
 enabled = false
 provider = "cloudflare"
-# Prefer CLOUDFLARE_DNS_API_TOKEN instead of storing a token here.
 api_token = ""
 auto_detect_addresses = true
 create_ipv4 = true
 create_ipv6 = true
-# 1 means Cloudflare automatic TTL.
 ttl = 1
-# Optional fixed addresses. Leave empty to detect from the VPS.
 ipv4_address = ""
 ipv6_address = ""
 ipv4_detection_url = "https://api4.ipify.org"
@@ -92,8 +80,52 @@ proxied = true
 
 [dns.node]
 enabled = true
-# Reality nodes must remain DNS only.
 proxied = false
+
+[dns.sub2api]
+enabled = true
+proxied = true
+
+# Optional independent Sub2API stack: application + PostgreSQL + Redis.
+[sub2api]
+enabled = false
+install_dir = "/opt/sub2api"
+image = "weishaw/sub2api:latest"
+domain = "api.example.net"
+timezone = "Asia/Shanghai"
+internal_port = 8080
+# Keep false when Caddy is used. If enabled, only localhost is published.
+publish_port = false
+published_port = 8080
+readiness_timeout = 120
+
+admin_email = "admin@example.net"
+admin_password_mode = "prompt"
+admin_password = ""
+admin_password_env = "VPSDEPLOY_SUB2API_ADMIN_PASSWORD"
+
+postgres_user = "sub2api"
+postgres_database = "sub2api"
+postgres_password_mode = "generate"
+postgres_password = ""
+postgres_password_env = "VPSDEPLOY_SUB2API_POSTGRES_PASSWORD"
+
+redis_password_mode = "generate"
+redis_password = ""
+redis_password_env = "VPSDEPLOY_SUB2API_REDIS_PASSWORD"
+
+jwt_secret_mode = "generate"
+jwt_secret = ""
+jwt_secret_env = "VPSDEPLOY_SUB2API_JWT_SECRET"
+
+totp_key_mode = "generate"
+totp_key = ""
+totp_key_env = "VPSDEPLOY_SUB2API_TOTP_KEY"
+
+# Safer defaults for an Internet-facing API gateway.
+security_url_allowlist_enabled = true
+allow_insecure_http = false
+allow_private_hosts = false
 
 [hardening]
 enabled = false
@@ -106,18 +138,8 @@ create_admin_user = true
 admin_user = "deploy"
 copy_root_authorized_keys = true
 grant_sudo = true
-
-# Sudo requires the deploy user's password; passwordless sudo is not used.
-# Options:
-#   "prompt"   - securely ask twice during deployment (recommended)
-#   "generate" - generate a strong password and print it once at successful exit
-#   "hash"     - read a password hash from admin_password_hash or
-#                VPSDEPLOY_ADMIN_PASSWORD_HASH
 admin_password_mode = "prompt"
 admin_password_hash = ""
-# VPSDEPLOY_ADMIN_PASSWORD may provide plaintext temporarily through the environment.
-
-# SSH remains key-only even though the local user has a password for sudo.
 disable_root_login = false
 disable_password_auth = true
 allow_users = ["root", "deploy"]
