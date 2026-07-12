@@ -46,14 +46,23 @@ class DNSRecordsTask(Task):
         ipv4 = self._address(cfg, 4)
         ipv6 = self._address(cfg, 6)
         records: list[DNSRecordSpec] = []
-        targets = (
+        targets: list[tuple[str, str, dict]] = [
             ("panel", str(domains["panel"]), section(context.config, "dns.panel")),
             ("node", str(domains["node"]), section(context.config, "dns.node")),
-        )
+        ]
+        sub2api = context.config.get('sub2api', {})
+        dns_sub2api = cfg.get('sub2api', {})
+        if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)):
+            if not isinstance(dns_sub2api, dict):
+                raise DeployError('dns.sub2api must be a TOML table')
+            targets.append(('sub2api', str(sub2api.get('domain', '')), dns_sub2api))
+
         for label, hostname, target in targets:
             if not bool(target.get("enabled", True)):
                 continue
-            proxied = bool(target.get("proxied", label == "panel"))
+            if not hostname or '.' not in hostname:
+                raise DeployError(f'{label} DNS hostname must be a fully qualified domain name')
+            proxied = bool(target.get("proxied", label != "node"))
             if label == "node" and proxied:
                 raise DeployError("dns.node.proxied must be false for a Reality node")
             if ipv4 and bool(cfg.get("create_ipv4", True)):
