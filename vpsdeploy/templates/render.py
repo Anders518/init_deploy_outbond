@@ -5,7 +5,7 @@ from vpsdeploy.providers.tls.base import TLSMaterial
 
 
 def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
-    cfg, ports, docker = context.config, section(context.config, 'ports'), section(context.config, 'docker')
+    ports, docker = section(context.config, 'ports'), section(context.config, 'docker')
     udp = '      - "${PROXY_PORT}:${PROXY_PORT}/udp"\n' if ports.get('publish_proxy_udp') else ''
     build = '    build:\n      context: ./caddy-build\n' if tls.requires_custom_caddy else ''
     tls_mounts = ''
@@ -57,20 +57,24 @@ networks:
 '''
 
 
+def _tls_block(tls: TLSMaterial) -> str:
+    if tls.mode == 'cloudflare_origin':
+        return '    tls /run/secrets/cloudflare-origin.crt /run/secrets/cloudflare-origin.key'
+    return '    tls {\n        dns cloudflare {env.CLOUDFLARE_API_TOKEN}\n    }'
+
+
 def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: str) -> str:
     domains, ports, panel = section(context.config, 'domains'), section(context.config, 'ports'), section(context.config, 'panel')
     panel_path = str(panel.get('path', '/')).rstrip('/') or '/'
     sub_path = str(panel.get('subscription_path', '/sub')).rstrip('/')
-    tls_block = ('    tls /run/secrets/cloudflare-origin.crt /run/secrets/cloudflare-origin.key'
-                 if tls.mode == 'cloudflare_origin' else
-                 '    tls {\n        dns cloudflare {env.CLOUDFLARE_API_TOKEN}\n    }')
+    tls_block = _tls_block(tls)
     global_block = '' if tls.mode == 'cloudflare_origin' else f'{{\n    email {domains["acme_email"]}\n}}\n\n'
     cidrs = ' '.join(map(str, panel.get('allowed_cidrs', [])))
     allow = f'        @denied not remote_ip {cidrs}\n        respond @denied "Not Found" 404\n' if cidrs else ''
     matcher = '' if panel_path == '/' else f'    @panel path {panel_path} {panel_path}/*\n'
     handle = '    handle {' if panel_path == '/' else '    handle @panel {'
     fallback = '' if panel_path == '/' else '    handle { respond "Not Found" 404 }\n'
-    return f'''{global_block}{domains['panel']}:{ports['panel_public']} {{
+    config = f'''{global_block}{domains['panel']}:{ports['panel_public']} {{
     encode zstd gzip
 {tls_block}
 
@@ -87,3 +91,16 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
     }}
 {fallback}}}
 '''
+    sub2api = context.config.get('sub2api', {})
+    if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)):
+        domain = str(sub2api.get('domain', '')).strip()
+        if domain:
+            config += f'''\n{domain}:{ports['panel_public']} {{
+    encode zstd gzip
+{tls_block}
+    reverse_proxy sub2api:8080 {{
+        flush_interval -1
+    }}
+}}
+'''
+    return config
