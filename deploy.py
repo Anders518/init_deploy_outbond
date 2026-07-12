@@ -26,22 +26,45 @@ def load_config(path: Path) -> dict:
 
 def show_credentials(context: DeploymentContext) -> None:
     path = context.stack_dir / 'state' / 'credentials.json'
-    if not path.is_file():
-        raise DeployError(f'Credentials have not been generated yet: {path}')
-    data = json.loads(path.read_text(encoding='utf-8'))
-    print('Deployment credentials')
-    print('======================')
-    print(f"Panel URL: {data.get('panel_url', '')}")
-    caddy = data.get('caddy', {})
-    print('\nCaddy BasicAuth')
-    print(f"Username: {caddy.get('username', '')}")
-    print(f"Password: {caddy.get('password', '')}")
-    xui = data.get('xui', {})
-    print('\n3x-ui')
-    print(f"Enabled: {xui.get('enabled', False)}")
-    print(f"Username: {xui.get('username', '')}")
-    print(f"Password: {xui.get('password', '')}")
-    print(f'\nSource: {path}')
+    if path.is_file():
+        data = json.loads(path.read_text(encoding='utf-8'))
+        print('Proxy stack credentials')
+        print('=======================')
+        print(f"Panel URL: {data.get('panel_url', '')}")
+        caddy = data.get('caddy', {})
+        print('\nCaddy BasicAuth')
+        print(f"Username: {caddy.get('username', '')}")
+        print(f"Password: {caddy.get('password', '')}")
+        xui = data.get('xui', {})
+        print('\n3x-ui')
+        print(f"Enabled: {xui.get('enabled', False)}")
+        print(f"Username: {xui.get('username', '')}")
+        print(f"Password: {xui.get('password', '')}")
+        print(f'\nSource: {path}')
+
+    sub2api_cfg = context.config.get('sub2api', {})
+    if isinstance(sub2api_cfg, dict) and bool(sub2api_cfg.get('enabled', False)):
+        sub_path = Path(str(sub2api_cfg.get('install_dir', '/opt/sub2api'))).resolve() / 'state' / 'credentials.json'
+        if sub_path.is_file():
+            data = json.loads(sub_path.read_text(encoding='utf-8'))
+            secrets_data = data.get('secrets', {})
+            print('\nSub2API credentials')
+            print('===================')
+            print(f"URL: {data.get('url', '')}")
+            print(f"Admin email: {data.get('admin_email', '')}")
+            print(f"Admin password: {secrets_data.get('admin_password', '')}")
+            print(f"PostgreSQL password: {secrets_data.get('postgres_password', '')}")
+            print(f"Redis password: {secrets_data.get('redis_password', '')}")
+            print(f"JWT secret: {secrets_data.get('jwt_secret', '')}")
+            print(f"TOTP key: {secrets_data.get('totp_key', '')}")
+            print(f'\nSource: {sub_path}')
+
+    if not path.is_file() and not (
+        isinstance(sub2api_cfg, dict)
+        and bool(sub2api_cfg.get('enabled', False))
+        and (Path(str(sub2api_cfg.get('install_dir', '/opt/sub2api'))).resolve() / 'state' / 'credentials.json').is_file()
+    ):
+        raise DeployError('No generated credential files were found')
 
 
 def print_sensitive_results(context: DeploymentContext) -> None:
@@ -56,13 +79,13 @@ def print_sensitive_results(context: DeploymentContext) -> None:
         print('SSH password authentication remains disabled; this password is for sudo only.')
 
     generated = context.state.get('generated_credentials')
-    if generated:
+    generated_sub2api = context.state.get('generated_sub2api_credentials')
+    if generated or generated_sub2api:
         print('\nDeployment completed.')
-        print(f"Credentials file: {generated['path']}")
         print('View credentials: sudo python3 deploy.py credentials')
-        if generated.get('caddy') or generated.get('xui'):
-            print('One or more panel passwords were generated automatically; review and store them now.')
-            show_credentials(context)
+        if generated_sub2api and generated_sub2api.get('generated'):
+            print('Sub2API secrets were generated and saved to a root-readable state file.')
+        show_credentials(context)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,7 +117,7 @@ def main() -> int:
             update(context)
         elif args.command == 'credentials':
             if os.geteuid() != 0:
-                raise DeployError('Run credentials as root because the credential file is root-readable only')
+                raise DeployError('Run credentials as root because credential files are root-readable only')
             show_credentials(context)
         else:
             from vpsdeploy.application import DEPLOY_TASKS
