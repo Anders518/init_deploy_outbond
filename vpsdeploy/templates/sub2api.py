@@ -16,7 +16,7 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
       nofile:
         soft: 100000
         hard: 100000
-{publish}    volumes:
+ {publish}    volumes:
       - ./data:/app/data
     environment:
       AUTO_SETUP: "true"
@@ -70,7 +70,7 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
       TZ: ${{TZ}}
     networks: [internal]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${{POSTGRES_USER}} -d $${{POSTGRES_DB}}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -82,7 +82,7 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
     restart: unless-stopped
     volumes:
       - ./redis_data:/data
-    command: ["sh", "-c", "redis-server --save 60 1 --appendonly yes --appendfsync everysec $${REDIS_PASSWORD:+--requirepass \"$${REDIS_PASSWORD}\"}"]
+    command: ["sh", "-c", "redis-server --save 60 1 --appendonly yes --appendfsync everysec $${{REDIS_PASSWORD:+--requirepass \"$${{REDIS_PASSWORD}}\"}}"]
     environment:
       REDISCLI_AUTH: ${{REDIS_PASSWORD}}
       TZ: ${{TZ}}
