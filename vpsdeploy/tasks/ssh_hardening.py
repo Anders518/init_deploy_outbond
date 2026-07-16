@@ -14,6 +14,7 @@ from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, se
 
 class SSHHardeningTask(Task):
     name = 'ssh-hardening'
+    _managed_config = Path('/etc/ssh/sshd_config.d/99-vps-hardening.conf')
 
     def enabled(self, context: DeploymentContext) -> bool:
         return bool(
@@ -73,6 +74,43 @@ class SSHHardeningTask(Task):
             raise DeployError('Admin password confirmation does not match')
         return first, None
 
+    @classmethod
+    def _neutralize_conflicting_directive(cls, directive: str) -> None:
+        """Comment active copies so the managed drop-in becomes the first effective value."""
+        candidates = [Path('/etc/ssh/sshd_config')]
+        dropin_dir = Path('/etc/ssh/sshd_config.d')
+        if dropin_dir.is_dir():
+            candidates.extend(sorted(dropin_dir.glob('*.conf')))
+
+        pattern = re.compile(rf'^(\s*){re.escape(directive)}\s+(.+?)\s*$', re.IGNORECASE)
+        marker = '# disabled by vpsdeploy; managed in 99-vps-hardening.conf: '
+
+        for path in candidates:
+            if path == cls._managed_config or not path.is_file():
+                continue
+            try:
+                original = path.read_text(encoding='utf-8')
+            except OSError as exc:
+                raise DeployError(f'Unable to read SSH configuration {path}: {exc}') from exc
+
+            changed = False
+            output: list[str] = []
+            for line in original.splitlines():
+                if pattern.match(line) and not line.lstrip().startswith('#'):
+                    output.append(marker + line.strip())
+                    changed = True
+                else:
+                    output.append(line)
+
+            if not changed:
+                continue
+
+            backup = path.with_name(path.name + '.vpsdeploy.bak')
+            if not backup.exists():
+                shutil.copy2(path, backup)
+            mode = path.stat().st_mode & 0o777
+            write_file(path, '\n'.join(output), mode)
+
     def apply(self, context: DeploymentContext) -> None:
         cfg = section(context.config, 'hardening.ssh')
         username = str(cfg.get('admin_user', 'deploy'))
@@ -114,6 +152,11 @@ class SSHHardeningTask(Task):
                 target_dir.chmod(0o700)
                 target.chmod(0o600)
 
+        # OpenSSH uses the first obtained value for most global directives. Provider
+        # images often define PermitRootLogin before the Include statement, so merely
+        # writing a late drop-in does not override it. Neutralize active copies first.
+        self._neutralize_conflicting_directive('PermitRootLogin')
+
         port = int(cfg['new_port'])
         lines = [
             f'Port {port}',
@@ -131,7 +174,7 @@ class SSHHardeningTask(Task):
             lines.append('AllowAgentForwarding no')
         if cfg.get('disable_x11_forwarding', True):
             lines.append('X11Forwarding no')
-        write_file(Path('/etc/ssh/sshd_config.d/99-vps-hardening.conf'), '\n'.join(lines), 0o600)
+        write_file(self._managed_config, '\n'.join(lines), 0o600)
         run(['sshd', '-t'])
         if run(['systemctl', 'reload', 'ssh'], check=False).returncode != 0:
             run(['systemctl', 'reload', 'sshd'])
@@ -142,6 +185,22 @@ class SSHHardeningTask(Task):
         result = run(['ss', '-H', '-ltn', f'sport = :{port}'], check=False, capture=True)
         if not result.stdout.strip():
             raise DeployError(f'SSH is not listening on {port}; keep current session open')
+
+        effective = run(['sshd', '-T'], capture=True).stdout
+        settings: dict[str, str] = {}
+        for line in effective.splitlines():
+            key, _, value = line.partition(' ')
+            if key and value:
+                settings[key.strip().lower()] = value.strip().lower()
+        actual_root = settings.get('permitrootlogin', '')
+        if actual_root == 'without-password':
+            actual_root = 'prohibit-password'
+        expected_root = 'no' if cfg.get('disable_root_login') else 'prohibit-password'
+        if actual_root != expected_root:
+            raise DeployError(
+                'Effective PermitRootLogin mismatch: '
+                f'expected {expected_root}, got {actual_root or "unknown"}'
+            )
 
         if cfg.get('create_admin_user') and cfg.get('grant_sudo', True):
             username = str(cfg.get('admin_user', 'deploy'))
