@@ -8,11 +8,11 @@ prune_dangling_images = true
 panel = "panel.example.net"
 subscription = "sub.example.net"
 node = "node.example.net"
-# Required only when panel.tls.mode = "acme_dns".
+# Required when panel.tls.mode = "acme_dns".
 acme_email = "admin@example.net"
 
 [cloudflare]
-# Used only by acme_dns mode. Prefer CLOUDFLARE_API_TOKEN in the environment.
+# Used by acme_dns DNS-01 issuance. Prefer CLOUDFLARE_API_TOKEN in the environment.
 api_token = ""
 
 [ports]
@@ -45,13 +45,15 @@ cli = "auto"
 allow_default_credentials = false
 
 [panel.tls]
-mode = "cloudflare_origin"
+# acme_dns is required for the DNS-only subscription host because proxy clients
+# must receive a publicly trusted certificate directly from Caddy.
+mode = "acme_dns"
 auto_create = true
 validity_days = 5475
-# Set true once after adding or changing panel/subscription/Sub2API hostnames.
+# Used only by cloudflare_origin mode after changing certificate hostnames.
 force_reissue = false
 api_token = ""
-# Leave empty to derive SANs from panel, subscription, and enabled Sub2API domains.
+# Used only by cloudflare_origin mode. Leave empty to derive SANs automatically.
 hostnames = []
 certificate_file = "/root/cloudflare-origin.crt"
 private_key_file = "/root/cloudflare-origin.key"
@@ -83,12 +85,12 @@ proxied = true
 
 [dns.subscription]
 enabled = true
-# Proxied is supported, but Cloudflare challenges/Access must not be applied
-# to the subscription host because proxy clients cannot solve browser challenges.
-proxied = true
+# Subscription clients connect directly to Caddy. Keep this DNS-only (grey cloud).
+proxied = false
 
 [dns.node]
 enabled = true
+# Reality must connect directly to the VPS and does not use an HTTPS certificate.
 proxied = false
 
 [dns.sub2api]
