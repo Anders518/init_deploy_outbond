@@ -3,6 +3,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import secrets
 import string
 import time
@@ -13,11 +14,29 @@ from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, se
 from vpsdeploy.templates.sub2api import render_sub2api_compose
 
 _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
+_HEX_32_BYTES = re.compile(r'^[0-9a-fA-F]{64}$')
 
 
 def _random_secret(length: int = 48) -> str:
-    alphabet = string.ascii_letters + string.digits + '-_@%+=' 
+    alphabet = string.ascii_letters + string.digits + '-_@%+='
     return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _random_hex_secret(bytes_length: int = 32) -> str:
+    return secrets.token_hex(bytes_length)
+
+
+def _validate_secret(label: str, key: str, value: str) -> str:
+    if not value:
+        raise DeployError(f'{label} cannot be empty')
+    if '\n' in value or '\r' in value:
+        raise DeployError(f'{label} cannot contain newlines')
+    if key == 'totp_key' and not _HEX_32_BYTES.fullmatch(value):
+        raise DeployError(
+            'Sub2API TOTP encryption key must be exactly 64 hexadecimal characters '
+            '(32 bytes), for example: openssl rand -hex 32'
+        )
+    return value
 
 
 def _resolve_secret(label: str, cfg: dict[str, Any], key: str, existing: str = '') -> tuple[str, bool]:
@@ -27,21 +46,22 @@ def _resolve_secret(label: str, cfg: dict[str, Any], key: str, existing: str = '
     if mode == 'prompt':
         first = getpass.getpass(f'{label}: ')
         second = getpass.getpass(f'Confirm {label}: ')
-        if not first or first != second:
-            raise DeployError(f'{label} values are empty or do not match')
-        return first, False
+        if first != second:
+            raise DeployError(f'{label} values do not match')
+        return _validate_secret(label, key, first), False
     if mode == 'generate':
-        return (existing or _random_secret()), not bool(existing)
+        if existing:
+            return _validate_secret(label, key, existing), False
+        value = _random_hex_secret() if key == 'totp_key' else _random_secret()
+        return _validate_secret(label, key, value), True
     if mode == 'config':
         value = str(cfg.get(key, ''))
-        if not value:
-            raise DeployError(f'{label} is empty in config.toml')
-        return value, False
+        return _validate_secret(label, key, value), False
     env_name = str(cfg.get(f'{key}_env', f'VPSDEPLOY_{key.upper()}'))
     value = os.environ.get(env_name, '')
     if not value:
         raise DeployError(f'Set {env_name} for {label}')
-    return value, False
+    return _validate_secret(label, key, value), False
 
 
 class Sub2APITask(Task):
@@ -66,6 +86,8 @@ class Sub2APITask(Task):
             mode = str(cfg.get(f'{key}_mode', 'generate'))
             if mode not in _PASSWORD_MODES:
                 raise DeployError(f'sub2api.{key}_mode is invalid')
+        if str(cfg.get('totp_key_mode', 'generate')) == 'config':
+            _validate_secret('Sub2API TOTP encryption key', 'totp_key', str(cfg.get('totp_key', '')))
 
     def apply(self, context: DeploymentContext) -> None:
         cfg = section(context.config, 'sub2api')
@@ -112,6 +134,7 @@ class Sub2APITask(Task):
         write_file(install_dir / '.env', '\n'.join(f'{k}={v}' for k, v in env.items()), 0o600)
         write_file(install_dir / 'docker-compose.yml', render_sub2api_compose(cfg), 0o600)
 
+        run(['docker', 'compose', 'config', '--quiet'], cwd=install_dir)
         run(['docker', 'compose', 'pull'], cwd=install_dir)
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=install_dir)
         self._wait_healthy(int(cfg.get('readiness_timeout', 120)))
@@ -133,14 +156,15 @@ class Sub2APITask(Task):
 
     @staticmethod
     def _wait_healthy(timeout: int) -> None:
+        last_status = 'unknown'
         for _ in range(max(timeout, 1)):
             result = run(['docker', 'inspect', '-f', '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}', 'sub2api'], check=False, capture=True)
-            status = result.stdout.strip()
-            if result.returncode == 0 and status in {'healthy', 'running'}:
+            last_status = result.stdout.strip() or last_status
+            if result.returncode == 0 and last_status in {'healthy', 'running'}:
                 return
             time.sleep(1)
         run(['docker', 'logs', '--tail', '100', 'sub2api'], check=False)
-        raise DeployError('Sub2API did not become ready in time')
+        raise DeployError(f'Sub2API did not become ready in time (last status: {last_status})')
 
     def verify(self, context: DeploymentContext) -> None:
         cfg = section(context.config, 'sub2api')
