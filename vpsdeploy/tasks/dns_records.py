@@ -46,8 +46,11 @@ class DNSRecordsTask(Task):
         ipv4 = self._address(cfg, 4)
         ipv6 = self._address(cfg, 6)
         records: list[DNSRecordSpec] = []
+        panel_domain = str(domains["panel"])
+        subscription_domain = str(domains.get("subscription", panel_domain)).strip() or panel_domain
         targets: list[tuple[str, str, dict]] = [
-            ("panel", str(domains["panel"]), section(context.config, "dns.panel")),
+            ("panel", panel_domain, section(context.config, "dns.panel")),
+            ("subscription", subscription_domain, section(context.config, "dns.subscription")),
             ("node", str(domains["node"]), section(context.config, "dns.node")),
         ]
         sub2api = context.config.get('sub2api', {})
@@ -57,6 +60,7 @@ class DNSRecordsTask(Task):
                 raise DeployError('dns.sub2api must be a TOML table')
             targets.append(('sub2api', str(sub2api.get('domain', '')), dns_sub2api))
 
+        seen: set[tuple[str, str]] = set()
         for label, hostname, target in targets:
             if not bool(target.get("enabled", True)):
                 continue
@@ -65,10 +69,12 @@ class DNSRecordsTask(Task):
             proxied = bool(target.get("proxied", label != "node"))
             if label == "node" and proxied:
                 raise DeployError("dns.node.proxied must be false for a Reality node")
-            if ipv4 and bool(cfg.get("create_ipv4", True)):
+            if ipv4 and bool(cfg.get("create_ipv4", True)) and (hostname, "A") not in seen:
                 records.append(DNSRecordSpec(hostname, "A", ipv4, proxied, ttl))
-            if ipv6 and bool(cfg.get("create_ipv6", True)):
+                seen.add((hostname, "A"))
+            if ipv6 and bool(cfg.get("create_ipv6", True)) and (hostname, "AAAA") not in seen:
                 records.append(DNSRecordSpec(hostname, "AAAA", ipv6, proxied, ttl))
+                seen.add((hostname, "AAAA"))
         if not records:
             raise DeployError("DNS task produced no records; configure an address or enable auto detection")
         return records
