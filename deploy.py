@@ -24,9 +24,24 @@ def load_config(path: Path) -> dict:
         return tomllib.load(handle)
 
 
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value
+    return values
+
+
 def show_credentials(context: DeploymentContext) -> None:
     path = context.stack_dir / 'state' / 'credentials.json'
+    found = False
     if path.is_file():
+        found = True
         data = json.loads(path.read_text(encoding='utf-8'))
         print('Proxy stack credentials')
         print('=======================')
@@ -44,26 +59,27 @@ def show_credentials(context: DeploymentContext) -> None:
 
     sub2api_cfg = context.config.get('sub2api', {})
     if isinstance(sub2api_cfg, dict) and bool(sub2api_cfg.get('enabled', False)):
-        sub_path = Path(str(sub2api_cfg.get('install_dir', '/opt/sub2api'))).resolve() / 'state' / 'credentials.json'
-        if sub_path.is_file():
-            data = json.loads(sub_path.read_text(encoding='utf-8'))
-            secrets_data = data.get('secrets', {})
+        install_dir = Path(str(sub2api_cfg.get('install_dir', '/opt/sub2api'))).resolve()
+        sub_path = install_dir / 'state' / 'credentials.json'
+        env_path = install_dir / '.env'
+        if sub_path.is_file() or env_path.is_file():
+            found = True
+            data = json.loads(sub_path.read_text(encoding='utf-8')) if sub_path.is_file() else {}
+            env = _read_env(env_path)
             print('\nSub2API credentials')
             print('===================')
             print(f"URL: {data.get('url', '')}")
-            print(f"Admin email: {data.get('admin_email', '')}")
-            print(f"Admin password: {secrets_data.get('admin_password', '')}")
-            print(f"PostgreSQL password: {secrets_data.get('postgres_password', '')}")
-            print(f"Redis password: {secrets_data.get('redis_password', '')}")
-            print(f"JWT secret: {secrets_data.get('jwt_secret', '')}")
-            print(f"TOTP key: {secrets_data.get('totp_key', '')}")
-            print(f'\nSource: {sub_path}')
+            print(f"Admin email: {data.get('admin_email', env.get('ADMIN_EMAIL', ''))}")
+            print(f"Admin password: {env.get('ADMIN_PASSWORD', '')}")
+            print(f"PostgreSQL password: {env.get('POSTGRES_PASSWORD', '')}")
+            print(f"Redis password: {env.get('REDIS_PASSWORD', '')}")
+            print(f"JWT secret: {env.get('JWT_SECRET', '')}")
+            print(f"TOTP key: {env.get('TOTP_ENCRYPTION_KEY', '')}")
+            print(f'\nSecret source: {env_path}')
+            if sub_path.is_file():
+                print(f'Metadata source: {sub_path}')
 
-    if not path.is_file() and not (
-        isinstance(sub2api_cfg, dict)
-        and bool(sub2api_cfg.get('enabled', False))
-        and (Path(str(sub2api_cfg.get('install_dir', '/opt/sub2api'))).resolve() / 'state' / 'credentials.json').is_file()
-    ):
+    if not found:
         raise DeployError('No generated credential files were found')
 
 
@@ -82,10 +98,21 @@ def print_sensitive_results(context: DeploymentContext) -> None:
     generated_sub2api = context.state.get('generated_sub2api_credentials')
     if generated or generated_sub2api:
         print('\nDeployment completed.')
-        print('View credentials: sudo python3 deploy.py credentials')
-        if generated_sub2api and generated_sub2api.get('generated'):
-            print('Sub2API secrets were generated and saved to a root-readable state file.')
-        show_credentials(context)
+        if generated_sub2api:
+            values = generated_sub2api.get('values', {})
+            print('\nSub2API credentials — shown from the runtime .env source')
+            print('========================================================')
+            print(f"URL: {generated_sub2api.get('url', '')}")
+            print(f"Admin email: {generated_sub2api.get('admin_email', '')}")
+            print(f"Admin password: {values.get('admin_password', '')}")
+            print(f"PostgreSQL password: {values.get('postgres_password', '')}")
+            print(f"Redis password: {values.get('redis_password', '')}")
+            print(f"JWT secret: {values.get('jwt_secret', '')}")
+            print(f"TOTP key: {values.get('totp_key', '')}")
+            print(f"Secret source: {generated_sub2api.get('path', '')}")
+        if generated:
+            print('\nView proxy credentials: sudo python3 deploy.py credentials')
+            show_credentials(context)
 
 
 def build_parser() -> argparse.ArgumentParser:
