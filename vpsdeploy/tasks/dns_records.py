@@ -48,9 +48,12 @@ class DNSRecordsTask(Task):
         records: list[DNSRecordSpec] = []
         panel_domain = str(domains["panel"])
         subscription_domain = str(domains.get("subscription", panel_domain)).strip() or panel_domain
+        dns_subscription = cfg.get("subscription", {})
+        if not isinstance(dns_subscription, dict):
+            raise DeployError("dns.subscription must be a TOML table")
         targets: list[tuple[str, str, dict]] = [
             ("panel", panel_domain, section(context.config, "dns.panel")),
-            ("subscription", subscription_domain, section(context.config, "dns.subscription")),
+            ("subscription", subscription_domain, dns_subscription),
             ("node", str(domains["node"]), section(context.config, "dns.node")),
         ]
         sub2api = context.config.get('sub2api', {})
