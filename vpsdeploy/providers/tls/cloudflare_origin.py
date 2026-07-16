@@ -49,7 +49,11 @@ class CloudflareOriginProvider:
                 raise DeployError('panel.tls.hostnames must be a TOML array')
             values = [str(item).strip().lower() for item in configured]
         else:
-            values = [str(section(context.config, 'domains')['panel']).strip().lower()]
+            domains = section(context.config, 'domains')
+            panel_domain = str(domains['panel']).strip().lower()
+            values = [panel_domain]
+            subscription_domain = str(domains.get('subscription', panel_domain)).strip().lower() or panel_domain
+            values.append(subscription_domain)
             sub2api = context.config.get('sub2api', {})
             if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)):
                 values.append(str(sub2api.get('domain', '')).strip().lower())
