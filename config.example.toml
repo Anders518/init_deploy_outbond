@@ -6,6 +6,7 @@ prune_dangling_images = true
 
 [domains]
 panel = "panel.example.net"
+subscription = "sub.example.net"
 node = "node.example.net"
 # Required only when panel.tls.mode = "acme_dns".
 acme_email = "admin@example.net"
@@ -26,7 +27,8 @@ path = "/"
 subscription_path = "/sub"
 allowed_cidrs = []
 
-# Caddy BasicAuth protects the reverse-proxy entry before 3x-ui.
+# Caddy BasicAuth protects only the panel host. The dedicated subscription
+# host exposes only subscription_path and returns 404 for every other path.
 # password_mode: "prompt", "generate", "config", or "environment".
 basic_auth_user = "gateway-admin"
 basic_auth_password_mode = "prompt"
@@ -46,9 +48,10 @@ allow_default_credentials = false
 mode = "cloudflare_origin"
 auto_create = true
 validity_days = 5475
+# Set true once after adding or changing panel/subscription/Sub2API hostnames.
 force_reissue = false
 api_token = ""
-# Leave empty to derive SANs from the panel and enabled Sub2API domains.
+# Leave empty to derive SANs from panel, subscription, and enabled Sub2API domains.
 hostnames = []
 certificate_file = "/root/cloudflare-origin.crt"
 private_key_file = "/root/cloudflare-origin.key"
@@ -76,6 +79,12 @@ ipv6_detection_url = "https://api6.ipify.org"
 
 [dns.panel]
 enabled = true
+proxied = true
+
+[dns.subscription]
+enabled = true
+# Proxied is supported, but Cloudflare challenges/Access must not be applied
+# to the subscription host because proxy clients cannot solve browser challenges.
 proxied = true
 
 [dns.node]
