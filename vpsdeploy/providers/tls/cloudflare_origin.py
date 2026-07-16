@@ -88,8 +88,8 @@ class CloudflareOriginProvider:
         # leaves a running container attached to the old inode and can produce a mixed pair.
         cert_text = source_cert.read_text(encoding='utf-8')
         key_text = source_key.read_text(encoding='utf-8')
-        write_file(cert_target, cert_text, 0o644, atomic=False)
-        write_file(key_target, key_text, 0o600, atomic=False)
+        write_file(cert_target, cert_text, 0o644)
+        write_file(key_target, key_text, 0o600)
 
     def _create(self, context: DeploymentContext, cert: Path, key: Path) -> None:
         cfg = section(context.config, "panel.tls")
