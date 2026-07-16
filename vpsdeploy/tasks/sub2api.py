@@ -15,6 +15,13 @@ from vpsdeploy.templates.sub2api import render_sub2api_compose
 
 _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
 _HEX_32_BYTES = re.compile(r'^[0-9a-fA-F]{64}$')
+_ENV_SECRET_KEYS = {
+    'admin_password': 'ADMIN_PASSWORD',
+    'postgres_password': 'POSTGRES_PASSWORD',
+    'redis_password': 'REDIS_PASSWORD',
+    'jwt_secret': 'JWT_SECRET',
+    'totp_key': 'TOTP_ENCRYPTION_KEY',
+}
 
 
 def _random_secret(length: int = 48) -> str:
@@ -37,6 +44,23 @@ def _validate_secret(label: str, key: str, value: str) -> str:
             '(32 bytes), for example: openssl rand -hex 32'
         )
     return value
+
+
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value
+    return values
 
 
 def _resolve_secret(label: str, cfg: dict[str, Any], key: str, existing: str = '') -> tuple[str, bool]:
@@ -82,7 +106,7 @@ class Sub2APITask(Task):
             port = int(cfg.get('published_port', 8080))
             if not 1 <= port <= 65535:
                 raise DeployError('sub2api.published_port is invalid')
-        for key in ('admin_password', 'postgres_password', 'redis_password', 'jwt_secret', 'totp_key'):
+        for key in _ENV_SECRET_KEYS:
             mode = str(cfg.get(f'{key}_mode', 'generate'))
             if mode not in _PASSWORD_MODES:
                 raise DeployError(f'sub2api.{key}_mode is invalid')
@@ -102,6 +126,7 @@ class Sub2APITask(Task):
                 existing = json.loads(credentials_path.read_text(encoding='utf-8'))
             except (OSError, json.JSONDecodeError):
                 existing = {}
+        existing_env = _read_env(install_dir / '.env')
 
         values: dict[str, str] = {}
         generated: list[str] = []
@@ -113,10 +138,21 @@ class Sub2APITask(Task):
             ('totp_key', 'Sub2API TOTP encryption key'),
         ):
             old = str(existing.get('secrets', {}).get(key, ''))
+            if not old:
+                old = existing_env.get(_ENV_SECRET_KEYS[key], '')
             value, was_generated = _resolve_secret(label, cfg, key, old)
             values[key] = value
             if was_generated:
                 generated.append(key)
+
+        postgres_data = install_dir / 'postgres_data'
+        postgres_initialized = any(postgres_data.iterdir())
+        if postgres_initialized and not existing_env.get('POSTGRES_PASSWORD') and not str(existing.get('secrets', {}).get('postgres_password', '')):
+            raise DeployError(
+                'Existing PostgreSQL data was found, but its password is not available in '
+                '/opt/sub2api/.env or state/credentials.json. Restore the original password '
+                'instead of generating a new one.'
+            )
 
         env = {
             'SUB2API_IMAGE': str(cfg.get('image', 'weishaw/sub2api:latest')),
@@ -131,6 +167,15 @@ class Sub2APITask(Task):
             'TOTP_ENCRYPTION_KEY': values['totp_key'],
             'PROXY_NETWORK': str(section(context.config, 'docker').get('network_name', 'proxy_stack')),
         }
+        credentials = {
+            'url': f"https://{cfg['domain']}:{int(section(context.config, 'ports')['panel_public'])}/",
+            'admin_email': env['ADMIN_EMAIL'],
+            'secrets': values,
+            'deployment_status': 'pending',
+        }
+        # Persist secrets before starting containers. A failed first deployment must not
+        # rotate the PostgreSQL password, JWT secret, or TOTP key on the next retry.
+        write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
         write_file(install_dir / '.env', '\n'.join(f'{k}={v}' for k, v in env.items()), 0o600)
         write_file(install_dir / 'docker-compose.yml', render_sub2api_compose(cfg), 0o600)
 
@@ -139,15 +184,10 @@ class Sub2APITask(Task):
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=install_dir)
         self._wait_healthy(int(cfg.get('readiness_timeout', 120)))
 
-        # ProxyStackTask renders the extra Caddy site. Reload now that Sub2API is reachable.
         run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
         run(['docker', 'exec', 'caddy-panel', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'])
 
-        credentials = {
-            'url': f"https://{cfg['domain']}:{int(section(context.config, 'ports')['panel_public'])}/",
-            'admin_email': env['ADMIN_EMAIL'],
-            'secrets': values,
-        }
+        credentials['deployment_status'] = 'ready'
         write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
         context.state['generated_sub2api_credentials'] = {
             'path': str(credentials_path),
