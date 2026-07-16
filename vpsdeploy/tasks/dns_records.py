@@ -69,9 +69,14 @@ class DNSRecordsTask(Task):
                 continue
             if not hostname or '.' not in hostname:
                 raise DeployError(f'{label} DNS hostname must be a fully qualified domain name')
-            proxied = bool(target.get("proxied", label != "node"))
+            proxied = bool(target.get("proxied", label == "panel" or label == "sub2api"))
             if label == "node" and proxied:
                 raise DeployError("dns.node.proxied must be false for a Reality node")
+            if label == "subscription" and proxied:
+                raise DeployError(
+                    "dns.subscription.proxied must be false. Subscription clients cannot reliably "
+                    "complete Cloudflare browser challenges, and direct access is required by this layout."
+                )
             if ipv4 and bool(cfg.get("create_ipv4", True)) and (hostname, "A") not in seen:
                 records.append(DNSRecordSpec(hostname, "A", ipv4, proxied, ttl))
                 seen.add((hostname, "A"))
