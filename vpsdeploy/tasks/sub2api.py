@@ -137,9 +137,10 @@ class Sub2APITask(Task):
             ('jwt_secret', 'Sub2API JWT secret'),
             ('totp_key', 'Sub2API TOTP encryption key'),
         ):
-            old = str(existing.get('secrets', {}).get(key, ''))
+            old = existing_env.get(_ENV_SECRET_KEYS[key], '')
+            # One-time migration from older deployments that duplicated secrets in JSON.
             if not old:
-                old = existing_env.get(_ENV_SECRET_KEYS[key], '')
+                old = str(existing.get('secrets', {}).get(key, ''))
             value, was_generated = _resolve_secret(label, cfg, key, old)
             values[key] = value
             if was_generated:
@@ -150,8 +151,7 @@ class Sub2APITask(Task):
         if postgres_initialized and not existing_env.get('POSTGRES_PASSWORD') and not str(existing.get('secrets', {}).get('postgres_password', '')):
             raise DeployError(
                 'Existing PostgreSQL data was found, but its password is not available in '
-                '/opt/sub2api/.env or state/credentials.json. Restore the original password '
-                'instead of generating a new one.'
+                '/opt/sub2api/.env. Restore the original password instead of generating a new one.'
             )
 
         env = {
@@ -167,16 +167,15 @@ class Sub2APITask(Task):
             'TOTP_ENCRYPTION_KEY': values['totp_key'],
             'PROXY_NETWORK': str(section(context.config, 'docker').get('network_name', 'proxy_stack')),
         }
-        credentials = {
+        metadata = {
             'url': f"https://{cfg['domain']}:{int(section(context.config, 'ports')['panel_public'])}/",
             'admin_email': env['ADMIN_EMAIL'],
-            'secrets': values,
             'deployment_status': 'pending',
+            'secret_source': str(install_dir / '.env'),
         }
-        # Persist secrets before starting containers. A failed first deployment must not
-        # rotate the PostgreSQL password, JWT secret, or TOTP key on the next retry.
-        write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
         write_file(install_dir / '.env', '\n'.join(f'{k}={v}' for k, v in env.items()), 0o600)
+        # State JSON is metadata only. Secrets live in the single runtime source, .env.
+        write_file(credentials_path, json.dumps(metadata, indent=2, ensure_ascii=False), 0o600)
         write_file(install_dir / 'docker-compose.yml', render_sub2api_compose(cfg), 0o600)
 
         run(['docker', 'compose', 'config', '--quiet'], cwd=install_dir)
@@ -187,11 +186,14 @@ class Sub2APITask(Task):
         run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
         run(['docker', 'exec', 'caddy-panel', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'])
 
-        credentials['deployment_status'] = 'ready'
-        write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
+        metadata['deployment_status'] = 'ready'
+        write_file(credentials_path, json.dumps(metadata, indent=2, ensure_ascii=False), 0o600)
         context.state['generated_sub2api_credentials'] = {
-            'path': str(credentials_path),
+            'path': str(install_dir / '.env'),
             'generated': generated,
+            'values': values,
+            'admin_email': env['ADMIN_EMAIL'],
+            'url': metadata['url'],
         }
 
     @staticmethod
