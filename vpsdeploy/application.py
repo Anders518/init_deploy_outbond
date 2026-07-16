@@ -6,7 +6,7 @@ from vpsdeploy.tasks.diagnostics import DiagnosticsTask
 from vpsdeploy.tasks.dns_records import DNSRecordsTask
 from vpsdeploy.tasks.fail2ban import Fail2BanTask
 from vpsdeploy.tasks.prerequisites import PrerequisitesTask
-from vpsdeploy.tasks.proxy_stack import ProxyStackTask
+from vpsdeploy.tasks.proxy_stack_recreate import ProxyStackTask
 from vpsdeploy.tasks.ssh_hardening import SSHHardeningTask
 from vpsdeploy.tasks.sub2api import Sub2APITask
 from vpsdeploy.tasks.system_hardening import SystemHardeningTask
