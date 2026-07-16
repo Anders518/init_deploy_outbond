@@ -30,22 +30,22 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
       - ./3x-ui/cert:/root/cert
     ports:
       - "${{PROXY_PORT}}:${{PROXY_PORT}}/tcp"
-{udp}    expose:
+ {udp}    expose:
       - "{ports['panel_internal']}/tcp"
       - "{ports['subscription_internal']}/tcp"
     networks: [proxy_stack]
 
   caddy:
-{build}    image: ${{CADDY_IMAGE}}
+ {build}    image: ${{CADDY_IMAGE}}
     container_name: caddy-panel
     restart: unless-stopped
     environment:
       TZ: ${{TZ}}
-{cf_env}    volumes:
+ {cf_env}    volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/data:/data
       - ./caddy/config:/config
-{tls_mounts}    ports:
+ {tls_mounts}    ports:
       - "${{PANEL_PUBLIC_PORT}}:${{PANEL_PUBLIC_PORT}}/tcp"
     networks: [proxy_stack]
     depends_on: [3x-ui]
@@ -53,7 +53,7 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
 networks:
   proxy_stack:
     name: {docker.get('network_name', 'proxy_stack')}
-{ipv6.rstrip()}
+ {ipv6.rstrip()}
 '''
 
 
@@ -65,8 +65,10 @@ def _tls_block(tls: TLSMaterial) -> str:
 
 def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: str) -> str:
     domains, ports, panel = section(context.config, 'domains'), section(context.config, 'ports'), section(context.config, 'panel')
+    panel_domain = str(domains['panel']).strip().lower()
+    subscription_domain = str(domains.get('subscription', panel_domain)).strip().lower() or panel_domain
     panel_path = str(panel.get('path', '/')).rstrip('/') or '/'
-    sub_path = str(panel.get('subscription_path', '/sub')).rstrip('/')
+    sub_path = str(panel.get('subscription_path', '/sub')).rstrip('/') or '/sub'
     tls_block = _tls_block(tls)
     global_block = '' if tls.mode == 'cloudflare_origin' else f'{{\n    email {domains["acme_email"]}\n}}\n\n'
     cidrs = ' '.join(map(str, panel.get('allowed_cidrs', [])))
@@ -74,16 +76,21 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
     matcher = '' if panel_path == '/' else f'    @panel path {panel_path} {panel_path}/*\n'
     handle = '    handle {' if panel_path == '/' else '    handle @panel {'
     fallback = '' if panel_path == '/' else '    handle { respond "Not Found" 404 }\n'
-    config = f'''{global_block}{domains['panel']}:{ports['panel_public']} {{
-    encode zstd gzip
-{tls_block}
 
-    @subscription path {sub_path} {sub_path}/*
+    subscription_on_panel = ''
+    if subscription_domain == panel_domain:
+        subscription_on_panel = f'''    @subscription path {sub_path} {sub_path}/*
     handle @subscription {{
         reverse_proxy 3x-ui:{ports['subscription_internal']}
     }}
 
-{matcher}{handle}
+'''
+
+    config = f'''{global_block}{panel_domain}:{ports['panel_public']} {{
+    encode zstd gzip
+{tls_block}
+
+{subscription_on_panel}{matcher}{handle}
 {allow}        basic_auth {{
             {panel['basic_auth_user']} {password_hash}
         }}
@@ -91,11 +98,29 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
     }}
 {fallback}}}
 '''
+
+    if subscription_domain != panel_domain:
+        config += f'''
+{subscription_domain}:{ports['panel_public']} {{
+    encode zstd gzip
+{tls_block}
+
+    @subscription path {sub_path} {sub_path}/*
+    handle @subscription {{
+        reverse_proxy 3x-ui:{ports['subscription_internal']}
+    }}
+    handle {{
+        respond "Not Found" 404
+    }}
+}}
+'''
+
     sub2api = context.config.get('sub2api', {})
     if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)):
         domain = str(sub2api.get('domain', '')).strip()
         if domain:
-            config += f'''\n{domain}:{ports['panel_public']} {{
+            config += f'''
+{domain}:{ports['panel_public']} {{
     encode zstd gzip
 {tls_block}
     reverse_proxy sub2api:8080 {{
