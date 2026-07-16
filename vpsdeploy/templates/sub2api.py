@@ -16,7 +16,7 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
       nofile:
         soft: 100000
         hard: 100000
- {publish}    volumes:
+{publish}    volumes:
       - ./data:/app/data
     environment:
       AUTO_SETUP: "true"
