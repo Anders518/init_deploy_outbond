@@ -20,6 +20,7 @@ class CloudflareOriginProvider:
             key = Path(str(cfg.get("private_key_file", ""))).expanduser()
             if not cert.is_file() or not key.is_file():
                 raise DeployError("Origin CA certificate/key files are missing")
+            self._validate_pair(cert, key)
         self._hostnames(context)
 
     def obtain(self, context: DeploymentContext) -> TLSMaterial:
@@ -30,15 +31,18 @@ class CloudflareOriginProvider:
         key_target = target_dir / "cloudflare-origin.key"
 
         if cert_target.is_file() and key_target.is_file() and not bool(cfg.get("force_reissue", False)):
+            self._validate_pair(cert_target, key_target)
             return TLSMaterial("cloudflare_origin", cert_target, key_target)
 
         if bool(cfg.get("auto_create", False)):
             self._create(context, cert_target, key_target)
         else:
-            shutil.copy2(Path(str(cfg["certificate_file"])).expanduser(), cert_target)
-            shutil.copy2(Path(str(cfg["private_key_file"])).expanduser(), key_target)
-            cert_target.chmod(0o644)
-            key_target.chmod(0o600)
+            source_cert = Path(str(cfg["certificate_file"])).expanduser()
+            source_key = Path(str(cfg["private_key_file"])).expanduser()
+            self._validate_pair(source_cert, source_key)
+            self._install_pair(source_cert, source_key, cert_target, key_target)
+
+        self._validate_pair(cert_target, key_target)
         return TLSMaterial("cloudflare_origin", cert_target, key_target)
 
     def _hostnames(self, context: DeploymentContext) -> list[str]:
@@ -65,6 +69,28 @@ class CloudflareOriginProvider:
                 hostnames.append(hostname)
         return hostnames
 
+    @staticmethod
+    def _validate_pair(cert: Path, key: Path) -> None:
+        cert_pub = run(
+            ['openssl', 'x509', '-in', str(cert), '-pubkey', '-noout'],
+            capture=True,
+        ).stdout.strip()
+        key_pub = run(
+            ['openssl', 'pkey', '-in', str(key), '-pubout'],
+            capture=True,
+        ).stdout.strip()
+        if not cert_pub or cert_pub != key_pub:
+            raise DeployError(f'TLS private key does not match certificate: {cert} / {key}')
+
+    @staticmethod
+    def _install_pair(source_cert: Path, source_key: Path, cert_target: Path, key_target: Path) -> None:
+        # Preserve existing bind-mount inodes. Replacing a bind-mounted file with rename(2)
+        # leaves a running container attached to the old inode and can produce a mixed pair.
+        cert_text = source_cert.read_text(encoding='utf-8')
+        key_text = source_key.read_text(encoding='utf-8')
+        write_file(cert_target, cert_text, 0o644, atomic=False)
+        write_file(key_target, key_text, 0o600, atomic=False)
+
     def _create(self, context: DeploymentContext, cert: Path, key: Path) -> None:
         cfg = section(context.config, "panel.tls")
         token = os.environ.get("CLOUDFLARE_ORIGIN_CA_TOKEN", "").strip() or str(cfg.get("api_token", "")).strip()
@@ -77,16 +103,19 @@ class CloudflareOriginProvider:
         if validity not in allowed_validities:
             raise DeployError("panel.tls.validity_days must be one of: " + ", ".join(str(value) for value in sorted(allowed_validities)))
 
-        csr = cert.with_suffix(".csr")
-        key.unlink(missing_ok=True)
-        csr.unlink(missing_ok=True)
+        temp_cert = cert.with_suffix('.crt.new')
+        temp_key = key.with_suffix('.key.new')
+        csr = cert.with_suffix('.csr.new')
+        for path in (temp_cert, temp_key, csr):
+            path.unlink(missing_ok=True)
+
         san = ','.join(f'DNS:{hostname}' for hostname in hostnames)
         run([
             "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", str(key), "-out", str(csr), "-subj", f"/CN={hostnames[0]}",
+            "-keyout", str(temp_key), "-out", str(csr), "-subj", f"/CN={hostnames[0]}",
             "-addext", f"subjectAltName={san}",
         ])
-        key.chmod(0o600)
+        temp_key.chmod(0o600)
 
         payload = json.dumps({
             "hostnames": hostnames,
@@ -115,21 +144,23 @@ class CloudflareOriginProvider:
                 details = error_body.get("errors") or error_body
             except json.JSONDecodeError:
                 details = response_text or exc.reason
-            key.unlink(missing_ok=True)
-            csr.unlink(missing_ok=True)
             raise DeployError(
                 f"Cloudflare Origin CA HTTP {exc.code}: {details}. Confirm that every hostname belongs "
                 "to a zone in the token's account and that the token has Origin CA certificate edit permission."
             ) from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            key.unlink(missing_ok=True)
-            csr.unlink(missing_ok=True)
             raise DeployError(f"Cloudflare Origin CA request failed: {exc}") from exc
+        finally:
+            csr.unlink(missing_ok=True)
 
         if not body.get("success") or not body.get("result", {}).get("certificate"):
-            key.unlink(missing_ok=True)
-            csr.unlink(missing_ok=True)
+            temp_key.unlink(missing_ok=True)
             raise DeployError(f"Cloudflare Origin CA error: {body.get('errors', body)}")
-        write_file(cert, body["result"]["certificate"], 0o644)
-        key.chmod(0o600)
-        csr.unlink(missing_ok=True)
+
+        write_file(temp_cert, body["result"]["certificate"], 0o644)
+        try:
+            self._validate_pair(temp_cert, temp_key)
+            self._install_pair(temp_cert, temp_key, cert, key)
+        finally:
+            temp_cert.unlink(missing_ok=True)
+            temp_key.unlink(missing_ok=True)
