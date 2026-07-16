@@ -17,6 +17,27 @@ class CertificateTask(Task):
         raise DeployError(f'Unsupported TLS mode: {mode}')
 
     def validate(self, context: DeploymentContext) -> None:
+        mode = str(section(context.config, 'panel.tls').get('mode', 'cloudflare_origin'))
+        domains = section(context.config, 'domains')
+        panel_domain = str(domains['panel']).strip().lower()
+        subscription_domain = str(domains.get('subscription', panel_domain)).strip().lower() or panel_domain
+        dns_cfg = section(context.config, 'dns')
+        dns_subscription = dns_cfg.get('subscription', {})
+        if not isinstance(dns_subscription, dict):
+            raise DeployError('dns.subscription must be a TOML table')
+
+        subscription_is_direct = (
+            subscription_domain != panel_domain
+            and bool(dns_subscription.get('enabled', True))
+            and not bool(dns_subscription.get('proxied', False))
+        )
+        if subscription_is_direct and mode != 'acme_dns':
+            raise DeployError(
+                'A DNS-only subscription host requires panel.tls.mode="acme_dns" so Mihomo, '
+                'Loon, and browsers receive a publicly trusted certificate. Cloudflare Origin CA '
+                'certificates are only intended for proxied Cloudflare-to-origin traffic.'
+            )
+
         self._provider(context).validate(context)
 
     def apply(self, context: DeploymentContext) -> None:
