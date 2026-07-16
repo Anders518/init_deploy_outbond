@@ -30,22 +30,22 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
       - ./3x-ui/cert:/root/cert
     ports:
       - "${{PROXY_PORT}}:${{PROXY_PORT}}/tcp"
- {udp}    expose:
+{udp}    expose:
       - "{ports['panel_internal']}/tcp"
       - "{ports['subscription_internal']}/tcp"
     networks: [proxy_stack]
 
   caddy:
- {build}    image: ${{CADDY_IMAGE}}
+{build}    image: ${{CADDY_IMAGE}}
     container_name: caddy-panel
     restart: unless-stopped
     environment:
       TZ: ${{TZ}}
- {cf_env}    volumes:
+{cf_env}    volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/data:/data
       - ./caddy/config:/config
- {tls_mounts}    ports:
+{tls_mounts}    ports:
       - "${{PANEL_PUBLIC_PORT}}:${{PANEL_PUBLIC_PORT}}/tcp"
     networks: [proxy_stack]
     depends_on: [3x-ui]
@@ -53,7 +53,7 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
 networks:
   proxy_stack:
     name: {docker.get('network_name', 'proxy_stack')}
- {ipv6.rstrip()}
+{ipv6.rstrip()}
 '''
 
 
