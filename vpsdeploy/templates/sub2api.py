@@ -50,7 +50,15 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
       - internal
       - proxy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      test:
+        - CMD
+        - wget
+        - -q
+        - -T
+        - "5"
+        - -O
+        - /dev/null
+        - http://localhost:8080/health
       interval: 30s
       timeout: 10s
       retries: 3
@@ -68,9 +76,12 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
       POSTGRES_DB: ${{POSTGRES_DB}}
       PGDATA: /var/lib/postgresql/data
       TZ: ${{TZ}}
-    networks: [internal]
+    networks:
+      - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${{POSTGRES_USER}} -d $${{POSTGRES_DB}}"]
+      test:
+        - CMD-SHELL
+        - 'pg_isready -U "$${{POSTGRES_USER}}" -d "$${{POSTGRES_DB}}"'
       interval: 10s
       timeout: 5s
       retries: 5
@@ -82,13 +93,27 @@ def render_sub2api_compose(cfg: dict[str, Any]) -> str:
     restart: unless-stopped
     volumes:
       - ./redis_data:/data
-    command: ["sh", "-c", "redis-server --save 60 1 --appendonly yes --appendfsync everysec $${{REDIS_PASSWORD:+--requirepass \"$${{REDIS_PASSWORD}}\"}}"]
+    command:
+      - redis-server
+      - --save
+      - "60"
+      - "1"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${{REDIS_PASSWORD}}
     environment:
       REDISCLI_AUTH: ${{REDIS_PASSWORD}}
       TZ: ${{TZ}}
-    networks: [internal]
+    networks:
+      - internal
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 10s
       timeout: 5s
       retries: 5
