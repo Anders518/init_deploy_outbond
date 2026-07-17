@@ -233,20 +233,40 @@ class ProxyStackTask(Task):
         url = f'https://{hostname}:{port}{path}'
         resolve = f'{hostname}:{port}:127.0.0.1'
 
-        unauthenticated = run([
-            'curl', '--silent', '--show-error', '--insecure', '--resolve', resolve,
-            '--output', '/dev/null', '--write-out', '%{http_code}', url,
-        ], check=False, capture=True)
-        if unauthenticated.stdout.strip() != '401':
+        last_status = ''
+        last_detail = ''
+        for attempt in range(60):
+            unauthenticated = run([
+                'curl', '--silent', '--show-error', '--insecure',
+                '--connect-timeout', '3', '--max-time', '8',
+                '--resolve', resolve, '--output', '/dev/null',
+                '--write-out', '%{http_code}', url,
+            ], check=False, capture=True)
+            last_status = unauthenticated.stdout.strip()
+            last_detail = (unauthenticated.stderr or '').strip()
+            if unauthenticated.returncode == 0 and last_status == '401':
+                break
+            if attempt == 0:
+                print('[caddy] waiting for TLS endpoint and ACME certificate readiness...')
+            time.sleep(2)
+        else:
+            logs = run(
+                ['docker', 'logs', '--tail', '80', 'caddy-panel'],
+                check=False,
+                capture=True,
+            )
+            log_detail = '\n'.join(part for part in (logs.stdout, logs.stderr) if part).strip()
             raise DeployError(
-                'Caddy BasicAuth verification failed: an unauthenticated request '
-                f'returned HTTP {unauthenticated.stdout.strip() or "unknown"}, expected 401'
+                'Caddy BasicAuth verification timed out after 120 seconds: '
+                f'unauthenticated request returned HTTP {last_status or "000"}, expected 401. '
+                f'{last_detail or "No curl error detail."}\nRecent Caddy logs:\n{log_detail}'
             )
 
         authenticated = run([
-            'curl', '--silent', '--show-error', '--insecure', '--resolve', resolve,
-            '--user', f'{username}:{password}', '--output', '/dev/null',
-            '--write-out', '%{http_code}', url,
+            'curl', '--silent', '--show-error', '--insecure',
+            '--connect-timeout', '3', '--max-time', '8',
+            '--resolve', resolve, '--user', f'{username}:{password}',
+            '--output', '/dev/null', '--write-out', '%{http_code}', url,
         ], check=False, capture=True)
         status = authenticated.stdout.strip()
         if authenticated.returncode != 0 or status in {'', '401', '403'}:
