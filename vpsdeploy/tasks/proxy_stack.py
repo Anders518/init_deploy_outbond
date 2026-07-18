@@ -15,6 +15,7 @@ from vpsdeploy.templates.render import render_caddy, render_compose
 
 _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
 _XUI_CLI_CANDIDATES = ('/app/x-ui', 'x-ui')
+_SUI_CLI_CANDIDATES = ('/app/sui', 'sui')
 
 
 def _random_password(length: int = 28) -> str:
@@ -54,10 +55,18 @@ def _resolve_password(*, label: str, mode: str, configured: str, env_name: str,
     return value, False
 
 
-def _xui_config(panel: dict[str, Any]) -> dict[str, Any]:
-    value = panel.get('xui', {})
+def _panel_backend(panel: dict[str, Any]) -> str:
+    backend = str(panel.get('backend', '3x-ui')).strip().lower()
+    if backend not in {'3x-ui', 's-ui'}:
+        raise DeployError('panel.backend must be "3x-ui" or "s-ui"')
+    return backend
+
+
+def _backend_config(panel: dict[str, Any], backend: str) -> dict[str, Any]:
+    key = 'xui' if backend == '3x-ui' else 'sui'
+    value = panel.get(key, {})
     if not isinstance(value, dict):
-        raise DeployError('panel.xui must be a TOML table')
+        raise DeployError(f'panel.{key} must be a TOML table')
     return value
 
 
@@ -66,37 +75,42 @@ class ProxyStackTask(Task):
 
     def validate(self, context: DeploymentContext) -> None:
         panel = section(context.config, 'panel')
-        xui = _xui_config(panel)
+        backend = _panel_backend(panel)
+        backend_cfg = _backend_config(panel, backend)
+        backend_label = '3x-ui' if backend == '3x-ui' else 'S-UI'
         for label, username in (
             ('Caddy BasicAuth', str(panel.get('basic_auth_user', 'admin')).strip()),
-            ('3x-ui', str(xui.get('username', 'xui-admin')).strip()),
+            (backend_label, str(backend_cfg.get('username', 'xui-admin' if backend == '3x-ui' else 'sui-admin')).strip()),
         ):
             if not username or any(char.isspace() for char in username):
                 raise DeployError(f'{label} username cannot be empty or contain whitespace')
         for label, mode in (
             ('Caddy BasicAuth', str(panel.get('basic_auth_password_mode', 'generate'))),
-            ('3x-ui', str(xui.get('password_mode', 'generate'))),
+            (backend_label, str(backend_cfg.get('password_mode', 'generate'))),
         ):
             if mode not in _PASSWORD_MODES:
                 raise DeployError(f'{label} password mode must be one of: {sorted(_PASSWORD_MODES)}')
         if (
-            str(xui.get('username', 'xui-admin')) == 'admin'
-            and str(xui.get('password', '')) == 'admin'
-            and not bool(xui.get('allow_default_credentials', False))
+            str(backend_cfg.get('username', '')) == 'admin'
+            and str(backend_cfg.get('password', '')) == 'admin'
+            and not bool(backend_cfg.get('allow_default_credentials', False))
         ):
             raise DeployError(
-                'Refusing the default 3x-ui admin/admin credentials. '
-                'Choose another password or explicitly set panel.xui.allow_default_credentials=true.'
+                f'Refusing the default {backend_label} admin/admin credentials. '
+                f'Choose another password or explicitly set panel.{"xui" if backend == "3x-ui" else "sui"}.allow_default_credentials=true.'
             )
 
     def apply(self, context: DeploymentContext) -> None:
         stack = context.stack_dir
-        for rel in ('3x-ui/db', '3x-ui/cert', 'caddy/data', 'caddy/config', 'caddy-build', 'secrets', 'backups', 'state'):
+        panel = section(context.config, 'panel')
+        backend = _panel_backend(panel)
+        backend_key = 'xui' if backend == '3x-ui' else 'sui'
+        backend_label = '3x-ui' if backend == '3x-ui' else 'S-UI'
+        for rel in (f'{backend}/db', f'{backend}/cert', 'caddy/data', 'caddy/config', 'caddy-build', 'secrets', 'backups', 'state'):
             (stack / rel).mkdir(parents=True, exist_ok=True)
 
         tls = context.state['tls']
-        panel = section(context.config, 'panel')
-        xui = _xui_config(panel)
+        backend_cfg = _backend_config(panel, backend)
         ports = section(context.config, 'ports')
         docker = section(context.config, 'docker')
         stack_cfg = section(context.config, 'stack')
@@ -114,31 +128,31 @@ class ProxyStackTask(Task):
         hashed = run([
             'docker', 'run', '--rm', 'caddy:2-alpine', 'caddy',
             'hash-password', '--plaintext', caddy_password,
-        ], capture=True).stdout.strip()
+        ], capture=True, redact_values={caddy_password}).stdout.strip()
         if not hashed.startswith('$2'):
             raise DeployError('Failed to generate Caddy password hash')
 
-        xui_password = ''
-        xui_generated = False
-        if bool(xui.get('enabled', True)):
-            existing_xui = str(existing.get('xui', {}).get('password', ''))
-            xui_password, xui_generated = _resolve_password(
-                label='3x-ui',
-                mode=str(xui.get('password_mode', 'generate')),
-                configured=str(xui.get('password', '')),
-                env_name=str(xui.get('password_env', 'VPSDEPLOY_XUI_PASSWORD')),
-                existing=existing_xui,
-            )
-            if (
-                str(xui.get('username', 'xui-admin')) == 'admin'
-                and xui_password == 'admin'
-                and not bool(xui.get('allow_default_credentials', False))
-            ):
-                raise DeployError('Refusing to configure insecure default 3x-ui credentials admin/admin')
+        default_username = 'xui-admin' if backend == '3x-ui' else 'sui-admin'
+        default_env = 'VPSDEPLOY_XUI_PASSWORD' if backend == '3x-ui' else 'VPSDEPLOY_SUI_PASSWORD'
+        existing_backend = str(existing.get(backend_key, {}).get('password', ''))
+        backend_password, backend_generated = _resolve_password(
+            label=backend_label,
+            mode=str(backend_cfg.get('password_mode', 'generate')),
+            configured=str(backend_cfg.get('password', '')),
+            env_name=str(backend_cfg.get('password_env', default_env)),
+            existing=existing_backend,
+        )
+        if (
+            str(backend_cfg.get('username', default_username)) == 'admin'
+            and backend_password == 'admin'
+            and not bool(backend_cfg.get('allow_default_credentials', False))
+        ):
+            raise DeployError(f'Refusing to configure insecure default {backend_label} credentials admin/admin')
 
         env = [
             f"TZ={stack_cfg.get('timezone', 'UTC')}",
-            f"XUI_IMAGE={docker['xui_image']}",
+            f"XUI_IMAGE={docker.get('xui_image', 'ghcr.io/mhsanaei/3x-ui:latest')}",
+            f"SUI_IMAGE={docker.get('sui_image', 'alireza7/s-ui:v1.5.3')}",
             f"CADDY_IMAGE={docker['caddy_image']}",
             f"PROXY_PORT={ports['proxy']}",
             f"PANEL_PUBLIC_PORT={ports['panel_public']}",
@@ -162,44 +176,56 @@ class ProxyStackTask(Task):
         else:
             run(['docker', 'pull', str(docker['caddy_image'])])
 
-        run(['docker', 'compose', 'pull', '3x-ui'], cwd=stack)
+        run(['docker', 'compose', 'pull', backend], cwd=stack)
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
+
+        if backend == '3x-ui':
+            resolved_cli = self._configure_xui(
+                str(backend_cfg.get('username', default_username)),
+                backend_password,
+                str(backend_cfg.get('cli', 'auto')),
+                bool(backend_cfg.get('allow_default_credentials', False)),
+            )
+        else:
+            resolved_cli = self._configure_sui(
+                str(backend_cfg.get('username', default_username)),
+                backend_password,
+                str(backend_cfg.get('cli', 'auto')),
+                bool(backend_cfg.get('allow_default_credentials', False)),
+                int(ports['panel_internal']),
+                str(panel.get('path', '/')),
+                int(ports['subscription_internal']),
+                str(panel.get('subscription_path', '/sub')),
+            )
 
         self._reload_caddy()
         self._verify_basic_auth(context, str(panel.get('basic_auth_user', 'admin')), caddy_password)
 
-        resolved_xui_cli = ''
-        if bool(xui.get('enabled', True)):
-            resolved_xui_cli = self._configure_xui(
-                str(xui.get('username', 'xui-admin')),
-                xui_password,
-                str(xui.get('cli', 'auto')),
-                bool(xui.get('allow_default_credentials', False)),
-            )
-
         credentials = {
             'panel_url': f"https://{section(context.config, 'domains')['panel']}:{ports['panel_public']}{panel.get('path', '/')}",
+            'backend': backend,
             'caddy': {
                 'username': str(panel.get('basic_auth_user', 'admin')),
                 'password': caddy_password,
             },
-            'xui': {
-                'enabled': bool(xui.get('enabled', True)),
-                'username': str(xui.get('username', 'xui-admin')),
-                'password': xui_password if bool(xui.get('enabled', True)) else '',
-                'cli': resolved_xui_cli,
+            backend_key: {
+                'enabled': True,
+                'username': str(backend_cfg.get('username', default_username)),
+                'password': backend_password,
+                'cli': resolved_cli,
             },
         }
         write_file(credentials_path, json.dumps(credentials, indent=2, ensure_ascii=False), 0o600)
         write_file(
             stack / 'secrets.txt',
             f"Credentials: {credentials_path}\n"
-            f"Show securely: sudo python3 deploy.py credentials\n",
+            f"Show securely: sudo uv run --no-dev --frozen python deploy.py credentials\n",
             0o600,
         )
         context.state['generated_credentials'] = {
             'caddy': caddy_generated,
-            'xui': xui_generated,
+            backend_key: backend_generated,
+            'backend': backend,
             'path': str(credentials_path),
         }
 
@@ -267,7 +293,7 @@ class ProxyStackTask(Task):
             '--connect-timeout', '3', '--max-time', '8',
             '--resolve', resolve, '--user', f'{username}:{password}',
             '--output', '/dev/null', '--write-out', '%{http_code}', url,
-        ], check=False, capture=True)
+        ], check=False, capture=True, redact_values={f'{username}:{password}'})
         status = authenticated.stdout.strip()
         if authenticated.returncode != 0 or status in {'', '401', '403'}:
             detail = (authenticated.stderr or '').strip()
@@ -310,7 +336,7 @@ class ProxyStackTask(Task):
         result = run([
             'docker', 'exec', '3x-ui', cli, 'setting',
             '-username', username, '-password', password,
-        ], check=False, capture=True)
+        ], check=False, capture=True, redact_values={password})
         output = '\n'.join(part for part in (result.stdout, result.stderr) if part).strip()
         if result.returncode != 0 or 'Username and password updated successfully' not in output:
             raise DeployError(
@@ -338,6 +364,72 @@ class ProxyStackTask(Task):
             raise DeployError(f'Unexpected 3x-ui setting output after restart: {after_restart}')
 
         print(f'[xui] credentials updated and verified with CLI {cli}')
+        return cli
+
+    def _resolve_sui_cli(self, configured: str) -> str:
+        candidates = _SUI_CLI_CANDIDATES if configured in {'', 'auto'} else (configured,)
+        for candidate in candidates:
+            probe = run(
+                ['docker', 'exec', 's-ui', 'sh', '-c', f'test -x {candidate} || command -v {candidate} >/dev/null 2>&1'],
+                check=False,
+                capture=True,
+            )
+            if probe.returncode == 0:
+                return candidate
+        raise DeployError(
+            'Unable to locate the S-UI CLI in the container. '
+            f'Tried: {", ".join(candidates)}. Set panel.sui.cli explicitly.'
+        )
+
+    def _run_sui(self, cli: str, *arguments: str, redact_values: set[str] | None = None) -> str:
+        result = run(
+            ['docker', 'exec', 's-ui', cli, *arguments],
+            check=False,
+            capture=True,
+            redact_values=redact_values,
+        )
+        output = '\n'.join(part for part in (result.stdout, result.stderr) if part).strip()
+        if result.returncode != 0:
+            safe_arguments = [
+                '********' if redact_values and value in redact_values else value
+                for value in arguments
+            ]
+            raise DeployError(
+                f'S-UI rejected {" ".join(safe_arguments)!r} with {cli!r}: {output or "no output"}'
+            )
+        return output
+
+    def _configure_sui(self, username: str, password: str, configured_cli: str,
+                       allow_default_credentials: bool, panel_port: int, panel_path: str,
+                       subscription_port: int, subscription_path: str) -> str:
+        self._wait_container('s-ui')
+        cli = self._resolve_sui_cli(configured_cli)
+        self._run_sui(
+            cli, 'admin', '-username', username, '-password', password,
+            redact_values={password},
+        )
+        self._run_sui(
+            cli, 'setting',
+            '-port', str(panel_port), '-path', panel_path,
+            '-subPort', str(subscription_port), '-subPath', subscription_path,
+        )
+
+        run(['docker', 'restart', 's-ui'])
+        self._wait_container('s-ui')
+        time.sleep(2)
+        admin = self._run_sui(cli, 'admin', '-show')
+        settings = self._run_sui(cli, 'setting', '-show')
+        if username not in admin and not allow_default_credentials:
+            raise DeployError(
+                'S-UI did not report the configured administrator after restart; '
+                'check /app/db persistence and panel.sui.cli.'
+            )
+        for expected in (str(panel_port), str(subscription_port)):
+            if expected not in settings:
+                raise DeployError(
+                    f'S-UI settings after restart do not contain expected port {expected}: {settings}'
+                )
+        print(f'[sui] credentials and endpoints updated and verified with CLI {cli}')
         return cli
 
     def verify(self, context: DeploymentContext) -> None:

@@ -40,7 +40,10 @@ def run(
 
 def require_root() -> None:
     if os.geteuid() != 0:
-        raise DeployError("Run as root, for example: sudo python3 deploy.py deploy")
+        raise DeployError(
+            "Run as root, for example: "
+            "sudo uv run --no-dev --frozen python deploy.py deploy"
+        )
 
 
 def write_file(path: Path, content: str, mode: int = 0o600) -> None:

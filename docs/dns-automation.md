@@ -28,7 +28,7 @@ Use a dedicated Cloudflare API token with `Zone / Zone / Read` and `Zone / DNS /
 read -rsp "Cloudflare DNS token: " CF_DNS_TOKEN
 echo
 sudo env CLOUDFLARE_DNS_API_TOKEN="$CF_DNS_TOKEN" \
-  python3 deploy.py deploy --task dns-records
+  uv run --no-dev --frozen python deploy.py deploy --task dns-records
 unset CF_DNS_TOKEN
 ```
 

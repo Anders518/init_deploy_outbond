@@ -42,7 +42,7 @@ Run a full deployment so DNS, certificate, Caddy and Sub2API are updated in orde
 sudo env \
   CLOUDFLARE_DNS_API_TOKEN="$CLOUDFLARE_DNS_API_TOKEN" \
   CLOUDFLARE_ORIGIN_CA_TOKEN="$CLOUDFLARE_ORIGIN_CA_TOKEN" \
-  python3 deploy.py deploy
+  uv run --no-dev --frozen python deploy.py deploy
 ```
 
 After successful issuance, set `force_reissue = false` again.
@@ -58,7 +58,7 @@ Credentials and generated secrets are stored at:
 The file is mode `0600`. Display all managed credentials with:
 
 ```bash
-sudo python3 deploy.py credentials
+sudo uv run --no-dev --frozen python deploy.py credentials
 ```
 
 ## Operations
@@ -73,7 +73,7 @@ docker compose restart sub2api
 Update both the proxy stack and Sub2API:
 
 ```bash
-sudo python3 deploy.py update
+sudo uv run --no-dev --frozen python deploy.py update
 ```
 
 ## Backup

@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from vpsdeploy.core.runtime import DeployError, DeploymentContext, section
+from vpsdeploy.core.runtime import DeployError, DeploymentContext, read_secret_file, section
 from vpsdeploy.providers.dns.base import DNSRecordSpec
 
 
@@ -40,12 +40,30 @@ class CloudflareDNSProvider:
             if bool(actual.get("proxied", False)) != expected.proxied:
                 raise DeployError(f"DNS verification failed for {expected.name}: unexpected proxy state")
 
+    def delete_managed_records(self, context: DeploymentContext, names: list[str], record_type: str) -> None:
+        token = self._token(context)
+        zones = self._list_zones(token)
+        for name in names:
+            zone = self._find_zone(name, zones)
+            records = self._list_records(token, zone['id'], name, record_type)
+            for record in records:
+                if str(record.get('comment', '')) != 'Managed by init_deploy_outbond':
+                    print(f'[dns] preserving unmanaged {record_type} record for {name}')
+                    continue
+                self._request(token, 'DELETE', f"/zones/{zone['id']}/dns_records/{record['id']}")
+                print(f'[dns] removed managed {record_type} {name} during fallback')
+
     def _token(self, context: DeploymentContext) -> str:
         cfg = section(context.config, "dns")
         token = os.environ.get("CLOUDFLARE_DNS_API_TOKEN", "").strip()
         token = token or str(cfg.get("api_token", "")).strip()
+        token = token or read_secret_file(cfg.get("api_token_file", ""), "Cloudflare DNS token")
         if not token:
-            raise DeployError("Set CLOUDFLARE_DNS_API_TOKEN or dns.api_token")
+            cloudflare = section(context.config, "cloudflare")
+            token = str(cloudflare.get("api_token", "")).strip()
+            token = token or read_secret_file(cloudflare.get("api_token_file", ""), "Cloudflare API token")
+        if not token:
+            raise DeployError("Set CLOUDFLARE_DNS_API_TOKEN, dns.api_token_file, or cloudflare.api_token_file")
         return token
 
     def _request(

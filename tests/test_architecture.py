@@ -34,7 +34,9 @@ def config(tmp_path: Path) -> dict:
 def test_task_names_are_unique() -> None:
     names = [task.name for task in DEPLOY_TASKS]
     assert len(names) == len(set(names))
-    assert names[:4] == ["prerequisites", "dns-records", "certificate", "proxy-stack"]
+    assert names[:5] == [
+        "prerequisites", "ipv6-connectivity", "dns-records", "certificate", "proxy-stack",
+    ]
 
 
 def test_certificate_provider_selection(tmp_path: Path) -> None:

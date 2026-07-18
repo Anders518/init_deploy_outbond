@@ -26,7 +26,11 @@ class DNSRecordsTask(Task):
         context.state["dns_records"] = self._records(context)
 
     def apply(self, context: DeploymentContext) -> None:
-        self._provider(context).reconcile(context, context.state["dns_records"])
+        provider = self._provider(context)
+        provider.reconcile(context, context.state["dns_records"])
+        cfg = section(context.config, 'dns')
+        if context.state.get('ipv6_ready') is False or not bool(cfg.get('create_ipv6', True)):
+            provider.delete_managed_records(context, self._target_hostnames(context), 'AAAA')
 
     def verify(self, context: DeploymentContext) -> None:
         self._provider(context).verify(context, context.state["dns_records"])
@@ -44,7 +48,12 @@ class DNSRecordsTask(Task):
         domains = section(context.config, "domains")
         ttl = int(cfg.get("ttl", 1))
         ipv4 = self._address(cfg, 4)
-        ipv6 = self._address(cfg, 6)
+        if context.state.get('ipv6_ready') is False:
+            ipv6 = None
+        elif context.state.get('ipv6_ready') is True:
+            ipv6 = str(context.state.get('ipv6_address', '')).strip() or self._address(cfg, 6)
+        else:
+            ipv6 = self._address(cfg, 6)
         records: list[DNSRecordSpec] = []
         panel_domain = str(domains["panel"])
         subscription_domain = str(domains.get("subscription", panel_domain)).strip() or panel_domain
@@ -86,6 +95,15 @@ class DNSRecordsTask(Task):
         if not records:
             raise DeployError("DNS task produced no records; configure an address or enable auto detection")
         return records
+
+    def _target_hostnames(self, context: DeploymentContext) -> list[str]:
+        cfg = section(context.config, 'dns')
+        domains = section(context.config, 'domains')
+        names = [str(domains['panel']), str(domains.get('subscription', domains['panel'])), str(domains['node'])]
+        sub2api = context.config.get('sub2api', {})
+        if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)):
+            names.append(str(sub2api.get('domain', '')))
+        return list(dict.fromkeys(name for name in names if name and '.' in name))
 
     def _address(self, cfg: dict, version: int) -> str | None:
         configured = str(cfg.get(f"ipv{version}_address", "")).strip()

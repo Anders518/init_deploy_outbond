@@ -18,8 +18,13 @@ def run(
     capture: bool = False,
     cwd: Path | None = None,
     input_text: str | None = None,
+    redact_values: set[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    print('$', shlex.join(command))
+    redacted = [
+        '********' if redact_values and value in redact_values else value
+        for value in command
+    ]
+    print('$', shlex.join(redacted))
     return subprocess.run(
         command,
         check=check,
@@ -45,6 +50,21 @@ def write_file(path: Path, content: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.rstrip() + '\n', encoding='utf-8')
     path.chmod(mode)
+
+
+def read_secret_file(value: Any, label: str) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    path = Path(raw).expanduser().resolve()
+    if not path.is_file():
+        raise DeployError(f'{label} file does not exist: {path}')
+    if path.stat().st_mode & 0o077:
+        raise DeployError(f'{label} file must not be readable by group or other users: {path}')
+    secret = path.read_text(encoding='utf-8').strip()
+    if not secret:
+        raise DeployError(f'{label} file is empty: {path}')
+    return secret
 
 
 @dataclass

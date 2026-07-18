@@ -9,4 +9,5 @@ secrets/
 __pycache__/
 .pytest_cache/
 .venv/
+.python-version
 output/

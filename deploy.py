@@ -14,6 +14,7 @@ except ModuleNotFoundError as exc:
     raise SystemExit('Python 3.11 or newer is required') from exc
 
 from vpsdeploy.application import deploy, status, update
+from vpsdeploy.config import validate_config
 from vpsdeploy.core.runtime import DeployError, DeploymentContext
 
 
@@ -50,11 +51,13 @@ def show_credentials(context: DeploymentContext) -> None:
         print('\nCaddy BasicAuth')
         print(f"Username: {caddy.get('username', '')}")
         print(f"Password: {caddy.get('password', '')}")
-        xui = data.get('xui', {})
-        print('\n3x-ui')
-        print(f"Enabled: {xui.get('enabled', False)}")
-        print(f"Username: {xui.get('username', '')}")
-        print(f"Password: {xui.get('password', '')}")
+        backend = str(data.get('backend', '3x-ui'))
+        backend_key = 'sui' if backend == 's-ui' else 'xui'
+        backend_data = data.get(backend_key, {})
+        print(f'\n{backend}')
+        print(f"Enabled: {backend_data.get('enabled', False)}")
+        print(f"Username: {backend_data.get('username', '')}")
+        print(f"Password: {backend_data.get('password', '')}")
         print(f'\nSource: {path}')
 
     sub2api_cfg = context.config.get('sub2api', {})
@@ -111,8 +114,8 @@ def print_sensitive_results(context: DeploymentContext) -> None:
             print(f"TOTP key: {values.get('totp_key', '')}")
             print(f"Secret source: {generated_sub2api.get('path', '')}")
         if generated:
-            print('\nView proxy credentials: sudo python3 deploy.py credentials')
-            show_credentials(context)
+            print('\nView proxy credentials: sudo uv run --no-dev --frozen python deploy.py credentials')
+            print(f"Credential file: {generated.get('path', context.stack_dir / 'state/credentials.json')}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser('update')
     sub.add_parser('credentials')
     sub.add_parser('list-tasks')
+    sub.add_parser('tui')
     return parser
 
 
@@ -133,6 +137,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         config = load_config(args.config)
+        validate_config(config)
         context = DeploymentContext(config=config, dry_run=args.dry_run)
         if args.command == 'deploy':
             deploy(context, set(args.tasks or []))
@@ -146,6 +151,9 @@ def main() -> int:
             if os.geteuid() != 0:
                 raise DeployError('Run credentials as root because credential files are root-readable only')
             show_credentials(context)
+        elif args.command == 'tui':
+            from vpsdeploy.tui import run_tui
+            run_tui(args.config)
         else:
             from vpsdeploy.application import DEPLOY_TASKS
             for task in DEPLOY_TASKS:

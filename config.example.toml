@@ -14,6 +14,19 @@ acme_email = "admin@example.net"
 [cloudflare]
 # Used by acme_dns DNS-01 issuance. Prefer CLOUDFLARE_API_TOKEN in the environment.
 api_token = ""
+# Root-only file containing only the token; convenient for unattended reruns.
+api_token_file = ""
+
+[ipv6]
+enabled = true
+auto_repair = true
+rollback_on_failure = true
+test_url = "https://api6.ipify.org"
+test_image = "curlimages/curl:8.16.0"
+test_subnet = "fd42:6d6f:6465::/64"
+timeout = 15
+route_wait_seconds = 20
+sysctl_file = "/etc/sysctl.d/90-vpsdeploy-ipv6.conf"
 
 [ports]
 proxy = 443
@@ -22,7 +35,46 @@ panel_internal = 2053
 subscription_internal = 2096
 publish_proxy_udp = false
 
+[node]
+# The protocol follows panel.backend: 3x-ui => VLESS Reality, s-ui => AnyTLS.
+enabled = true
+client_name = "primary"
+# Existing generated client secrets are reused on repeated deployments.
+# Set rotate_client_secret=true once to rotate them, then set it back to false.
+rotate_client_secret = false
+
+[node.reality]
+target = "www.cloudflare.com"
+server_name = "www.cloudflare.com"
+fingerprint = "chrome"
+flow = "xtls-rprx-vision"
+# Pinning this version currently gives reliable Mihomo and sing-box interop.
+xray_version = "v26.6.27"
+
+[node.anytls]
+padding_scheme = [
+  "stop=8",
+  "0=30-30",
+  "1=100-400",
+  "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
+  "3=9-9,500-1000",
+  "4=500-1000",
+  "5=500-1000",
+  "6=500-1000",
+  "7=500-1000",
+]
+
+[node.verify]
+enabled = true
+require_all_clients = true
+test_url = "https://api4.ipify.org"
+timeout = 30
+mihomo_image = "metacubex/mihomo:v1.19.28"
+singbox_image = "ghcr.io/sagernet/sing-box:v1.13.12"
+
 [panel]
+# Select exactly one node management backend: "3x-ui" (Xray) or "s-ui" (sing-box).
+backend = "3x-ui"
 path = "/"
 subscription_path = "/sub"
 allowed_cidrs = []
@@ -36,11 +88,20 @@ basic_auth_password = ""
 basic_auth_password_env = "VPSDEPLOY_CADDY_PASSWORD"
 
 [panel.xui]
-enabled = true
 username = "xui-admin"
 password_mode = "prompt"
 password = ""
 password_env = "VPSDEPLOY_XUI_PASSWORD"
+cli = "auto"
+allow_default_credentials = false
+
+[panel.sui]
+# Used only when panel.backend = "s-ui". S-UI manages the sing-box core and
+# supports visual AnyTLS inbound, users, traffic statistics and subscriptions.
+username = "sui-admin"
+password_mode = "prompt"
+password = ""
+password_env = "VPSDEPLOY_SUI_PASSWORD"
 cli = "auto"
 allow_default_credentials = false
 
@@ -60,6 +121,7 @@ private_key_file = "/root/cloudflare-origin.key"
 
 [docker]
 xui_image = "ghcr.io/mhsanaei/3x-ui:latest"
+sui_image = "alireza7/s-ui:v1.5.3"
 caddy_image = "caddy:2-alpine"
 network_name = "proxy_stack"
 enable_ipv6 = true
@@ -70,6 +132,7 @@ force_rebuild_caddy = false
 enabled = false
 provider = "cloudflare"
 api_token = ""
+api_token_file = ""
 auto_detect_addresses = true
 create_ipv4 = true
 create_ipv6 = true

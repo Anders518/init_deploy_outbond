@@ -4,12 +4,12 @@
 
 ```text
 公网 443/tcp
-  └─ 3x-ui / Xray / VLESS Reality
+  └─ 二选一：3x-ui / Xray，或 S-UI / sing-box / AnyTLS
 
 公网 8443/tcp
   └─ Caddy
-       ├─ 面板路径 → BasicAuth → 3x-ui:2053
-       └─ /sub/*   → 3x-ui:2096
+       ├─ 面板路径 → BasicAuth → 所选面板:2053
+       └─ /sub/*   → 所选面板:2096
 ```
 
 支持：
@@ -21,6 +21,100 @@
 - 可选 SSH 端口修改与密钥登录加固
 - 可选普通管理用户、Fail2Ban、自动安全更新和 sysctl 加固
 - 部署前配置备份
+- 3x-ui 与 S-UI（sing-box/AnyTLS）互斥选择
+- 自动创建 VLESS Reality 或 AnyTLS 入站、用户和客户端配置
+- 自动使用 Mihomo 与 sing-box 请求外部 HTTPS，并在后端重启后复测
+- 自动检测和修复宿主机/Docker IPv6；验证失败时回滚并撤销托管 AAAA
+
+## 节点面板二选一
+
+`panel.backend` 决定唯一的节点管理面板。未配置时默认为 `3x-ui`，兼容旧配置：
+
+```toml
+[panel]
+backend = "3x-ui" # 或 "s-ui"
+```
+
+选择 S-UI：
+
+```toml
+[panel]
+backend = "s-ui"
+path = "/"
+subscription_path = "/sub"
+
+[panel.sui]
+username = "sui-admin"
+password_mode = "environment"
+password_env = "VPSDEPLOY_SUI_PASSWORD"
+cli = "auto"
+allow_default_credentials = false
+
+[docker]
+sui_image = "alireza7/s-ui:v1.5.3"
+```
+
+部署命令：
+
+```bash
+sudo env VPSDEPLOY_SUI_PASSWORD='use-a-strong-password' \
+  CLOUDFLARE_API_TOKEN='your-token' \
+  uv run --no-dev --frozen python deploy.py deploy
+```
+
+部署器只会生成所选面板的 Compose 服务，并通过 `--remove-orphans` 移除另一个面板容器，避免二者同时占用节点端口。原面板数据目录不会自动删除，便于回退。S-UI 启动后，部署器会通过其 CLI 固化管理员凭据、面板路径、面板内部端口和订阅端口，并在重启后校验持久化结果。
+
+容器就绪后，`node-config` 会继续创建所选协议的 TLS/Reality 配置、入站和用户，不需要登录面板手工补节点：
+
+- `3x-ui` 自动配置 VLESS Reality，并固定兼容的 Xray 版本。
+- `s-ui` 自动让 Caddy 通过 DNS-01 获取节点证书，再配置 AnyTLS。
+
+`node-verify` 会生成 root-only 的 Mihomo 与 sing-box 配置，分别通过节点请求外部 HTTPS，检查出口 IP 和服务端流量计数，然后重启所选面板并重复一次。任何必需客户端失败都会使部署命令返回非零。
+
+```text
+/opt/proxy-stack/state/node-client.json
+/opt/proxy-stack/state/reality-client.json
+/opt/proxy-stack/state/anytls-client.json
+/opt/proxy-stack/state/mihomo-test.yaml
+/opt/proxy-stack/state/sing-box-test.json
+/opt/proxy-stack/state/node-verification.json
+```
+
+这些文件均为 `0600 root:root`。节点域名必须保持 DNS only。S-UI 的数据库和证书目录分别持久化到 `/opt/proxy-stack/s-ui/db` 与 `/opt/proxy-stack/s-ui/cert`。
+
+## 修改自动生成的账号密码
+
+`password_mode = "generate"` 表示首次随机生成、后续复用已有值，重复部署不会无故更换密码。查看当前值：
+
+```bash
+sudo uv run --no-dev --frozen python deploy.py credentials
+```
+
+推荐使用环境变量换成自定义密码，避免把明文写入 TOML。例如当前选择 3x-ui：
+
+```toml
+[panel]
+basic_auth_password_mode = "environment"
+basic_auth_password_env = "VPSDEPLOY_CADDY_PASSWORD"
+
+[panel.xui]
+username = "my-xui-user"
+password_mode = "environment"
+password_env = "VPSDEPLOY_XUI_PASSWORD"
+```
+
+```bash
+sudo env \
+  VPSDEPLOY_CADDY_PASSWORD='new-caddy-password' \
+  VPSDEPLOY_XUI_PASSWORD='new-xui-password' \
+  uv run --no-dev --frozen python deploy.py deploy --task certificate --task proxy-stack
+```
+
+选择 S-UI 时改用 `[panel.sui]` 和 `VPSDEPLOY_SUI_PASSWORD`。部署器会调用面板 CLI 更新凭据、重启容器，并验证新值已持久化。
+
+也可以使用 `password_mode = "config"` 并填写 `password`，但必须执行 `chmod 600 config.toml`，且绝不能提交该文件。`prompt` 模式适合人工运行。
+
+Sub2API 首次部署前可通过 `sub2api.admin_password_mode = "environment"` 和 `VPSDEPLOY_SUB2API_ADMIN_PASSWORD` 指定管理员密码。已有数据库的管理员密码应在 Sub2API 面板中修改；`ADMIN_PASSWORD` 是初始化凭据，不会强制覆盖现有管理员。PostgreSQL、JWT、TOTP 密钥不是普通登录密码，不能仅修改 TOML 后重启；这类密钥需要单独的数据迁移或轮换流程。
 
 ## 安全说明
 
@@ -38,9 +132,19 @@
 
 - Debian 或 Ubuntu
 - Python 3.11+
+- uv 0.11+
 - root 权限
 - Docker；也可以由脚本自动安装
 - Cloudflare 托管的域名
+
+初始化开发/测试环境：
+
+```bash
+uv sync --frozen
+uv run --frozen pytest
+```
+
+部署命令使用 `--no-dev`，不会安装 pytest 等开发依赖。`uv.lock` 已提交，用于保证不同主机解析到一致的工具版本。
 
 ## 推荐 TLS 模式：Cloudflare Origin CA
 
@@ -122,19 +226,40 @@ git clone https://github.com/Anders518/init_deploy_outbond.git
 cd init_deploy_outbond
 cp config.example.toml config.toml
 nano config.toml
-sudo python3 deploy.py deploy
+sudo uv run --no-dev --frozen python deploy.py deploy
 ```
+
+交互式终端界面：
+
+```bash
+sudo uv run --no-dev --frozen python deploy.py tui
+```
+
+TUI 支持完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、状态与凭据查看。密码通过环境变量和临时 `0600` 配置传给子进程，不写入主配置。
+
+## IPv6 自动修复与回退
+
+`ipv6-connectivity` 任务会：
+
+1. 选择稳定的全局 IPv6 地址并验证宿主机 HTTPS 出口。
+2. 创建临时 IPv6 Docker 网络，通过一次性 curl 容器验证真实出口。
+3. 失败时尝试启用 IPv6、转发以及物理接口 `accept_ra=2`，必要时安全合并 Docker daemon 配置。
+4. 修改前保存文件和运行时 sysctl 值；修复后必须再次通过宿主机和 Docker 测试。
+5. 任一步失败就恢复原文件、sysctl 和 Docker 状态，继续 IPv4-only 部署。
+6. DNS 阶段仅在验证成功后发布 AAAA；回退时删除带有本项目管理标记的 AAAA，不碰用户手工记录。
+
+结果保存在 `/opt/proxy-stack/state/ipv6.json`，权限为 `0600 root:root`。
 
 查看状态：
 
 ```bash
-sudo python3 deploy.py status
+sudo uv run --no-dev --frozen python deploy.py status
 ```
 
 更新容器：
 
 ```bash
-sudo python3 deploy.py update
+sudo uv run --no-dev --frozen python deploy.py update
 ```
 
 ## 可选 DNS-01 模式
@@ -152,19 +277,29 @@ caddy_image = "local/caddy-cloudflare:latest"
 运行：
 
 ```bash
-sudo CLOUDFLARE_API_TOKEN='your-token' python3 deploy.py deploy
+sudo env CLOUDFLARE_API_TOKEN='your-token' uv run --no-dev --frozen python deploy.py deploy
 ```
 
 该模式会构建包含 `caddy-dns/cloudflare` 的自定义 Caddy 镜像。
+
+无人值守部署也可将 token 单独保存为 `0600` 文件：
+
+```toml
+[cloudflare]
+api_token_file = "cloudflare.secret"
+
+[dns]
+api_token_file = "cloudflare.secret"
+```
 
 ## 端口规划
 
 默认端口：
 
 ```text
-443/tcp   VLESS Reality
+443/tcp   VLESS Reality 或 AnyTLS（由 panel.backend 决定）
 8443/tcp  Cloudflare 到 Caddy 的 HTTPS 入口
-2053/tcp  3x-ui 面板内部端口，不发布到宿主机
+2053/tcp  所选面板内部端口，不发布到宿主机
 2096/tcp  订阅内部端口，不发布到宿主机
 ```
 
@@ -178,7 +313,7 @@ SSH 端口
 
 使用 Cloudflare Proxy 后，最好进一步把 `8443/tcp` 的来源限制为 Cloudflare IP 段，防止绕过 Cloudflare 直接访问源站。Cloudflare IP 段会变化，因此应通过独立维护流程定期同步，不建议在部署脚本中硬编码。
 
-## 3x-ui 配置
+## 自动节点配置
 
 面板：
 
@@ -199,7 +334,7 @@ External domain: 面板域名
 External port: 8443
 ```
 
-Reality inbound：
+选择 3x-ui 时自动生成：
 
 ```text
 Protocol: VLESS
@@ -208,6 +343,16 @@ Network: TCP
 Security: Reality
 Flow: xtls-rprx-vision
 Encryption/decryption: none
+```
+
+选择 S-UI 时自动生成：
+
+```text
+Protocol: AnyTLS
+Port: 443
+TLS certificate: Caddy DNS-01 / Let's Encrypt
+SNI: domains.node
+User password: root-only node state
 ```
 
 订阅路径默认不使用 Caddy BasicAuth，因为多数客户端更新订阅时无法处理交互式 BasicAuth。面板路径仍由 Caddy BasicAuth 和 3x-ui 自身认证双重保护。
@@ -267,6 +412,8 @@ docker exec 3x-ui ip -6 route
 docker exec 3x-ui curl -6 https://api64.ipify.org
 ```
 
+选择 S-UI 时，将以上容器名替换为 `s-ui`。
+
 ## 生成目录
 
 ```text
@@ -280,13 +427,16 @@ docker exec 3x-ui curl -6 https://api64.ipify.org
 │   └── cloudflare-origin.key
 ├── backups/
 ├── caddy/
-└── 3x-ui/
+├── 3x-ui/             # 选择 3x-ui 时使用
+├── s-ui/              # 选择 S-UI 时使用
+└── state/             # 客户端配置和验证报告（0600）
 ```
 
 至少备份：
 
 ```text
 /opt/proxy-stack/3x-ui/db
+/opt/proxy-stack/s-ui/db
 /opt/proxy-stack/caddy/data
 /opt/proxy-stack/secrets
 /opt/proxy-stack/Caddyfile

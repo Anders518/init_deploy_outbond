@@ -6,7 +6,9 @@ from vpsdeploy.tasks.diagnostics import DiagnosticsTask
 from vpsdeploy.tasks.dns_records import DNSRecordsTask
 from vpsdeploy.tasks.fail2ban import Fail2BanTask
 from vpsdeploy.tasks.prerequisites import PrerequisitesTask
+from vpsdeploy.tasks.ipv6_connectivity import IPv6ConnectivityTask
 from vpsdeploy.tasks.proxy_stack_recreate import ProxyStackTask
+from vpsdeploy.tasks.node_config import NodeConfigTask, NodeVerifyTask
 from vpsdeploy.tasks.ssh_hardening import SSHHardeningTask
 from vpsdeploy.tasks.sub2api import Sub2APITask
 from vpsdeploy.tasks.system_hardening import SystemHardeningTask
@@ -15,9 +17,12 @@ from vpsdeploy.tasks.unattended_upgrades import UnattendedUpgradesTask
 
 DEPLOY_TASKS = [
     PrerequisitesTask(),
+    IPv6ConnectivityTask(),
     DNSRecordsTask(),
     CertificateTask(),
     ProxyStackTask(),
+    NodeConfigTask(),
+    NodeVerifyTask(),
     Sub2APITask(),
     SSHHardeningTask(),
     Fail2BanTask(),
@@ -50,3 +55,5 @@ def update(context: DeploymentContext) -> None:
             run(["docker", "compose", "up", "-d", "--remove-orphans"], cwd=sub_dir)
     if bool(section(context.config, "stack").get("prune_dangling_images", True)):
         run(["docker", "image", "prune", "-f"])
+    NodeConfigTask().execute(context)
+    NodeVerifyTask().execute(context)

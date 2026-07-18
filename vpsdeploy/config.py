@@ -4,7 +4,8 @@ import ipaddress
 from pathlib import Path
 from typing import Any
 
-from .common import DeployError, warn
+from .common import warn
+from .core.runtime import DeployError
 
 try:
     import tomllib
@@ -55,6 +56,29 @@ def validate_config(config: dict[str, Any]) -> None:
     panel = section(config, "panel")
     docker = section(config, "docker")
     tls = section(config, "panel.tls")
+    node = config.get("node", {})
+    if not isinstance(node, dict):
+        raise DeployError("node must be a TOML table")
+
+    backend = str(panel.get("backend", "3x-ui")).strip().lower()
+    if backend not in {"3x-ui", "s-ui"}:
+        raise DeployError('panel.backend must be "3x-ui" or "s-ui"')
+    backend_section = "xui" if backend == "3x-ui" else "sui"
+    if not isinstance(panel.get(backend_section, {}), dict):
+        raise DeployError(f"panel.{backend_section} must be a TOML table")
+    image_key = "xui_image" if backend == "3x-ui" else "sui_image"
+    if not str(docker.get(image_key, "")).strip():
+        raise DeployError(f"docker.{image_key} cannot be empty when panel.backend={backend!r}")
+    verify = node.get("verify", {})
+    if not isinstance(verify, dict):
+        raise DeployError("node.verify must be a TOML table")
+    if bool(verify.get("enabled", True)):
+        if not str(verify.get("mihomo_image", "metacubex/mihomo:v1.19.28")).strip():
+            raise DeployError("node.verify.mihomo_image cannot be empty")
+        if not str(verify.get("singbox_image", "ghcr.io/sagernet/sing-box:v1.13.12")).strip():
+            raise DeployError("node.verify.singbox_image cannot be empty")
+    if backend == "s-ui" and tls_mode(config) != "acme_dns":
+        raise DeployError('panel.backend="s-ui" requires panel.tls.mode="acme_dns" for a publicly trusted AnyTLS certificate')
 
     for name in ("panel", "node"):
         if not str(domains.get(name, "")).strip():

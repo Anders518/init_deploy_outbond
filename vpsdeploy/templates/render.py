@@ -6,6 +6,33 @@ from vpsdeploy.providers.tls.base import TLSMaterial
 
 def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
     ports, docker = section(context.config, 'ports'), section(context.config, 'docker')
+    panel = section(context.config, 'panel')
+    backend = str(panel.get('backend', '3x-ui')).strip().lower()
+    if backend == 's-ui':
+        panel_service = '''  s-ui:
+    image: ${SUI_IMAGE}
+    container_name: s-ui
+    restart: unless-stopped
+    tty: true
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./s-ui/db:/app/db
+      - ./s-ui/cert:/root/cert
+'''
+        dependency = 's-ui'
+    else:
+        panel_service = '''  3x-ui:
+    image: ${XUI_IMAGE}
+    container_name: 3x-ui
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./3x-ui/db:/etc/x-ui
+      - ./3x-ui/cert:/root/cert
+'''
+        dependency = '3x-ui'
     udp = '      - "${PROXY_PORT}:${PROXY_PORT}/udp"\n' if ports.get('publish_proxy_udp') else ''
     build = '    build:\n      context: ./caddy-build\n' if tls.requires_custom_caddy else ''
     tls_mounts = ''
@@ -19,16 +46,7 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
         if docker.get('ipv6_subnet'):
             ipv6 += f'    ipam:\n      config:\n        - subnet: "{docker["ipv6_subnet"]}"\n'
     return f'''services:
-  3x-ui:
-    image: ${{XUI_IMAGE}}
-    container_name: 3x-ui
-    restart: unless-stopped
-    environment:
-      TZ: ${{TZ}}
-    volumes:
-      - ./3x-ui/db:/etc/x-ui
-      - ./3x-ui/cert:/root/cert
-    ports:
+{panel_service}    ports:
       - "${{PROXY_PORT}}:${{PROXY_PORT}}/tcp"
 {udp}    expose:
       - "{ports['panel_internal']}/tcp"
@@ -48,7 +66,7 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
 {tls_mounts}    ports:
       - "${{PANEL_PUBLIC_PORT}}:${{PANEL_PUBLIC_PORT}}/tcp"
     networks: [proxy_stack]
-    depends_on: [3x-ui]
+    depends_on: [{dependency}]
 
 networks:
   proxy_stack:
@@ -76,12 +94,13 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
     matcher = '' if panel_path == '/' else f'    @panel path {panel_path} {panel_path}/*\n'
     handle = '    handle {' if panel_path == '/' else '    handle @panel {'
     fallback = '' if panel_path == '/' else '    handle { respond "Not Found" 404 }\n'
+    panel_service = 's-ui' if str(panel.get('backend', '3x-ui')).strip().lower() == 's-ui' else '3x-ui'
 
     subscription_on_panel = ''
     if subscription_domain == panel_domain:
         subscription_on_panel = f'''    @subscription path {sub_path} {sub_path}/*
     handle @subscription {{
-        reverse_proxy 3x-ui:{ports['subscription_internal']}
+        reverse_proxy {panel_service}:{ports['subscription_internal']}
     }}
 
 '''
@@ -94,7 +113,7 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
 {allow}        basic_auth {{
             {panel['basic_auth_user']} {password_hash}
         }}
-        reverse_proxy 3x-ui:{ports['panel_internal']}
+        reverse_proxy {panel_service}:{ports['panel_internal']}
     }}
 {fallback}}}
 '''
@@ -107,11 +126,21 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
 
     @subscription path {sub_path} {sub_path}/*
     handle @subscription {{
-        reverse_proxy 3x-ui:{ports['subscription_internal']}
+        reverse_proxy {panel_service}:{ports['subscription_internal']}
     }}
     handle {{
         respond "Not Found" 404
     }}
+}}
+'''
+
+    if panel_service == 's-ui':
+        node_domain = str(domains['node']).strip().lower()
+        config += f'''
+{node_domain}:{ports['panel_public']} {{
+    encode zstd gzip
+{tls_block}
+    respond "AnyTLS certificate endpoint" 404
 }}
 '''
 
