@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, run_retry, section, write_file
 from vpsdeploy.templates.sub2api import render_sub2api_compose
 
 _PASSWORD_MODES = {'prompt', 'generate', 'config', 'environment'}
@@ -183,8 +183,8 @@ class Sub2APITask(Task):
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=install_dir)
         self._wait_healthy(int(cfg.get('readiness_timeout', 120)))
 
-        run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
-        run(['docker', 'exec', 'caddy-panel', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'])
+        run_retry(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
+        run_retry(['docker', 'exec', 'caddy-panel', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'])
 
         metadata['deployment_status'] = 'ready'
         write_file(credentials_path, json.dumps(metadata, indent=2, ensure_ascii=False), 0o600)

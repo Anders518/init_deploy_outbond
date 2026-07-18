@@ -152,9 +152,11 @@ class SSHHardeningTask(Task):
                 raise DeployError('Invalid admin username')
             try:
                 user = pwd.getpwnam(username)
+                user_created = False
             except KeyError:
                 run(['useradd', '--create-home', '--shell', '/bin/bash', username])
                 user = pwd.getpwnam(username)
+                user_created = True
 
             if cfg.get('grant_sudo', True):
                 run(['usermod', '-aG', 'sudo', username])
@@ -165,11 +167,15 @@ class SSHHardeningTask(Task):
                 )
                 run(['visudo', '-cf', f'/etc/sudoers.d/90-{username}'])
 
-                password, password_hash = self._password(context, username)
-                if password_hash:
-                    run(['usermod', '--password', password_hash, username])
-                else:
-                    run(['chpasswd'], input_text=f'{username}:{password}\n')
+                # Password provisioning is a user-creation concern. Re-running
+                # SSH hardening must never reset an existing administrator's
+                # password or prompt for it merely to update sshd settings.
+                if user_created:
+                    password, password_hash = self._password(context, username)
+                    if password_hash:
+                        run(['usermod', '--password', password_hash, username])
+                    else:
+                        run(['chpasswd'], input_text=f'{username}:{password}\n')
 
             if cfg.get('copy_root_authorized_keys', True):
                 source = Path('/root/.ssh/authorized_keys')

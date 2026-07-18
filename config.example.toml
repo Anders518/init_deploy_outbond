@@ -109,6 +109,9 @@ allow_default_credentials = false
 # acme_dns is required for the DNS-only subscription host because proxy clients
 # must receive a publicly trusted certificate directly from Caddy.
 mode = "acme_dns"
+# Clean only _acme-challenge TXT records for configured service hostnames
+# before restarting Caddy, recovering safely from interrupted DNS-01 attempts.
+cleanup_stale_challenges = true
 auto_create = true
 validity_days = 5475
 # Used only by cloudflare_origin mode after changing certificate hostnames.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pathlib import Path
+import re
 import shutil
 
 from vpsdeploy.core.runtime import DeployError, DeploymentContext, FileSnapshot, Task, run, section
@@ -13,6 +14,10 @@ def _ufw_config(context: DeploymentContext) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise DeployError('hardening.ufw must be a TOML table')
     return value
+
+
+def _has_rule(output: str, rule: str) -> bool:
+    return re.search(rf'(?<!\d){re.escape(rule)}(?!\d)', output) is not None
 
 
 class UFWTask(Task):
@@ -84,6 +89,11 @@ class UFWTask(Task):
         run(['ufw', 'default', str(cfg.get('default_outgoing', 'allow')).lower(), 'outgoing'])
         for port, protocol, comment in dict.fromkeys(rules):
             run(['ufw', 'allow', f'{port}/{protocol}', 'comment', comment])
+        if (bool(ssh.get('enabled', False)) and not bool(ssh.get('keep_current_port', True))
+                and current_ssh_port != ssh_port):
+            # Allow the replacement port first, then retire the transition
+            # port. This ordering prevents locking out the active SSH session.
+            run(['ufw', '--force', 'delete', 'allow', f'{current_ssh_port}/tcp'], check=False)
         if bool(cfg.get('logging', True)):
             run(['ufw', 'logging', str(cfg.get('logging_level', 'low')).lower()])
 
@@ -102,6 +112,10 @@ class UFWTask(Task):
         required.append(f"{int(ssh['new_port'] if ssh.get('enabled', False) else ssh.get('current_port', 22))}/tcp")
         if bool(ssh.get('enabled', False)) and bool(ssh.get('keep_current_port', True)):
             required.append(f"{int(ssh.get('current_port', 22))}/tcp")
-        missing = [rule for rule in required if rule not in result.stdout]
+        missing = [rule for rule in required if not _has_rule(result.stdout, rule)]
         if missing:
             raise DeployError(f'UFW is missing required rules: {", ".join(missing)}')
+        if (bool(ssh.get('enabled', False)) and not bool(ssh.get('keep_current_port', True))
+                and int(ssh.get('current_port', 22)) != int(ssh['new_port'])
+                and _has_rule(result.stdout, f"{int(ssh.get('current_port', 22))}/tcp")):
+            raise DeployError('UFW still allows the retired SSH port')

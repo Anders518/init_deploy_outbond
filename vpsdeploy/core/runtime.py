@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,22 @@ def run(
         cwd=cwd,
         input=input_text,
     )
+
+
+def run_retry(
+    command: list[str], *, attempts: int = 6, interval: float = 1.0,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Retry short-lived runtime failures while preserving the final detail."""
+    last: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(max(attempts, 1)):
+        last = run(command, check=False, capture=True, cwd=cwd)
+        if last.returncode == 0:
+            return last
+        if attempt + 1 < max(attempts, 1):
+            time.sleep(interval)
+    detail = ((last.stderr if last else '') or (last.stdout if last else '')).strip()
+    raise DeployError(f'Command failed after {max(attempts, 1)} attempts: {detail or shlex.join(command)}')
 
 
 def section(config: dict[str, Any], dotted: str) -> dict[str, Any]:

@@ -8,6 +8,7 @@ import pytest
 from vpsdeploy.config import validate_config
 from vpsdeploy.core.runtime import DeployError, DeploymentContext
 from vpsdeploy.providers.tls.base import TLSMaterial
+from vpsdeploy.providers.dns.cloudflare import CloudflareDNSProvider
 from vpsdeploy.tasks import proxy_stack
 from vpsdeploy.tasks.proxy_stack import ProxyStackTask
 from vpsdeploy.templates.render import render_caddy, render_compose
@@ -65,6 +66,52 @@ def base_config(tmp_path: Path) -> dict:
     }
 
 
+def test_runtime_retry_recovers_from_transient_docker_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter([
+        subprocess.CompletedProcess(['docker'], 1, '', 'failed to open stdout fifo'),
+        subprocess.CompletedProcess(['docker'], 0, 'Valid configuration', ''),
+    ])
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return next(results)
+
+    monkeypatch.setattr(runtime, 'run', fake_run)
+    monkeypatch.setattr(runtime.time, 'sleep', lambda seconds: None)
+
+    result = runtime.run_retry(['docker', 'exec', 'caddy-panel', 'caddy', 'validate'])
+
+    assert result.returncode == 0
+    assert len(calls) == 2
+
+
+def test_cloudflare_cleanup_deletes_only_target_acme_txt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = CloudflareDNSProvider()
+    config = base_config(tmp_path)
+    config['dns'] = {'api_token': 'token'}
+    deleted: list[str] = []
+    monkeypatch.setattr(provider, '_list_zones', lambda token: [{'id': 'zone', 'name': 'example.net'}])
+    monkeypatch.setattr(
+        provider, '_list_records',
+        lambda token, zone, name, kind: [{'id': 'txt-1'}] if name == '_acme-challenge.sub.example.net' else [],
+    )
+    monkeypatch.setattr(
+        provider, '_request',
+        lambda token, method, path, payload=None, query=None: deleted.append(path) or {'success': True},
+    )
+
+    provider.delete_acme_challenge_records(
+        DeploymentContext(config), ['sub.example.net'],
+    )
+
+    assert deleted == ['/zones/zone/dns_records/txt-1']
+
+
 def test_xui_is_the_backward_compatible_default(tmp_path: Path) -> None:
     config = base_config(tmp_path)
     del config['panel']['backend']
@@ -76,6 +123,9 @@ def test_xui_is_the_backward_compatible_default(tmp_path: Path) -> None:
     assert '  s-ui:' not in compose
     assert 'reverse_proxy 3x-ui:2053' in caddy
     assert 'reverse_proxy 3x-ui:2096' in caddy
+    assert 'acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}' in caddy
+    assert 'issuer acme' not in caddy
+    assert 'issuer zerossl' not in caddy
 
 
 def test_sui_backend_is_exclusive_and_receives_all_routes(tmp_path: Path) -> None:
@@ -311,6 +361,7 @@ def test_ufw_is_opt_in_and_allows_required_ports_before_enable(
         return subprocess.CompletedProcess(command, 0, status, '')
 
     monkeypatch.setattr(ufw, 'run', fake_run)
+    monkeypatch.setattr(UFWTask, 'prepare_rollback', lambda self, ctx: {})
     UFWTask().execute(context)
 
     assert ['apt-get', '-o', 'Dpkg::Options::=--force-confmiss', 'install', '-y', 'ufw'] in commands
@@ -335,7 +386,31 @@ def test_ufw_keeps_old_ssh_port_during_migration(
 
     monkeypatch.setattr(ufw, 'run', fake_run)
     monkeypatch.setattr(ufw.shutil, 'which', lambda name: '/usr/sbin/ufw')
+    monkeypatch.setattr(UFWTask, 'prepare_rollback', lambda self, ctx: {})
     UFWTask().execute(DeploymentContext(config))
 
     assert ['ufw', 'allow', '22/tcp', 'comment', 'vpsdeploy SSH transition'] in commands
     assert ['ufw', 'allow', '4522/tcp', 'comment', 'vpsdeploy SSH'] in commands
+
+
+def test_ufw_removes_old_ssh_port_after_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = base_config(tmp_path)
+    config['hardening'].update(enabled=True, ufw={'enabled': True})
+    config['hardening']['ssh'].update(enabled=True, keep_current_port=False)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        status = 'Status: active\nufw allow 4522/tcp\nufw allow 443/tcp\nufw allow 8443/tcp\n'
+        return subprocess.CompletedProcess(command, 0, status, '')
+
+    monkeypatch.setattr(ufw, 'run', fake_run)
+    monkeypatch.setattr(ufw.shutil, 'which', lambda name: '/usr/sbin/ufw')
+    monkeypatch.setattr(UFWTask, 'prepare_rollback', lambda self, ctx: {})
+    UFWTask().execute(DeploymentContext(config))
+
+    allow_new = commands.index(['ufw', 'allow', '4522/tcp', 'comment', 'vpsdeploy SSH'])
+    remove_old = commands.index(['ufw', '--force', 'delete', 'allow', '22/tcp'])
+    assert allow_new < remove_old < commands.index(['ufw', '--force', 'enable'])

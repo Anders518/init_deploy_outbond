@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, run_retry, section, write_file
+from vpsdeploy.providers.dns.cloudflare import CloudflareDNSProvider
 from vpsdeploy.templates.render import render_caddy, render_compose
 
 
@@ -177,6 +178,17 @@ class ProxyStackTask(Task):
             run(['docker', 'pull', str(docker['caddy_image'])])
 
         run(['docker', 'compose', 'pull', backend], cwd=stack)
+        if tls.mode == 'acme_dns' and bool(section(context.config, 'panel.tls').get('cleanup_stale_challenges', True)):
+            # Stop the existing issuer before deleting abandoned TXT records,
+            # otherwise its retry loop may recreate the same record mid-cleanup.
+            run(['docker', 'compose', 'stop', 'caddy'], cwd=stack, check=False)
+            domains = section(context.config, 'domains')
+            hostnames = [
+                str(domains['panel']),
+                str(domains.get('subscription', domains['panel'])),
+                str(domains['node']),
+            ]
+            CloudflareDNSProvider().delete_acme_challenge_records(context, hostnames)
         run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=stack)
 
         if backend == '3x-ui':
@@ -230,21 +242,27 @@ class ProxyStackTask(Task):
         }
 
     def _wait_container(self, name: str, timeout: int = 30) -> None:
+        stable = 0
         for _ in range(timeout):
             result = run(
-                ['docker', 'inspect', '-f', '{{.State.Running}}', name],
+                ['docker', 'inspect', '-f', '{{.State.Running}} {{.State.Restarting}}', name],
                 check=False,
                 capture=True,
             )
-            if result.returncode == 0 and result.stdout.strip() == 'true':
-                return
+            if result.returncode == 0 and result.stdout.strip() == 'true false':
+                stable += 1
+                if stable >= 2:
+                    return
+            else:
+                stable = 0
             time.sleep(1)
-        raise DeployError(f'{name} container did not become ready')
+        run(['docker', 'logs', '--tail', '100', name], check=False)
+        raise DeployError(f'{name} container did not become stably ready')
 
     def _reload_caddy(self) -> None:
         self._wait_container('caddy-panel')
-        run(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
-        run([
+        run_retry(['docker', 'exec', 'caddy-panel', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile'])
+        run_retry([
             'docker', 'exec', 'caddy-panel', 'caddy', 'reload',
             '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile',
         ])

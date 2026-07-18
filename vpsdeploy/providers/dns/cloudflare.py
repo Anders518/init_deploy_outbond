@@ -53,6 +53,18 @@ class CloudflareDNSProvider:
                 self._request(token, 'DELETE', f"/zones/{zone['id']}/dns_records/{record['id']}")
                 print(f'[dns] removed managed {record_type} {name} during fallback')
 
+    def delete_acme_challenge_records(self, context: DeploymentContext, hostnames: list[str]) -> None:
+        """Remove stale DNS-01 records left behind by interrupted Caddy runs."""
+        token = self._token(context)
+        zones = self._list_zones(token)
+        for hostname in dict.fromkeys(hostnames):
+            challenge = f'_acme-challenge.{hostname.strip(".")}'
+            zone = self._find_zone(challenge, zones)
+            records = self._list_records(token, zone['id'], challenge, 'TXT')
+            for record in records:
+                self._request(token, 'DELETE', f"/zones/{zone['id']}/dns_records/{record['id']}")
+                print(f'[acme] removed stale TXT {challenge}')
+
     def _token(self, context: DeploymentContext) -> str:
         cfg = section(context.config, "dns")
         token = os.environ.get("CLOUDFLARE_DNS_API_TOKEN", "").strip()

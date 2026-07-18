@@ -75,10 +75,14 @@ networks:
 '''
 
 
-def _tls_block(tls: TLSMaterial) -> str:
+def _tls_block(context: DeploymentContext, tls: TLSMaterial) -> str:
     if tls.mode == 'cloudflare_origin':
         return '    tls /run/secrets/cloudflare-origin.crt /run/secrets/cloudflare-origin.key'
-    return '    tls {\n        dns cloudflare {env.CLOUDFLARE_API_TOKEN}\n    }'
+    # Do not add a site-level tls/dns shortcut here. It explicitly provisions
+    # only the ACME issuer and disables Caddy's built-in redundant issuer
+    # policy. The global acme_dns option below applies DNS-01 to the default
+    # issuer chain while retaining automatic fallback.
+    return ''
 
 
 def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: str) -> str:
@@ -87,8 +91,13 @@ def render_caddy(context: DeploymentContext, tls: TLSMaterial, password_hash: st
     subscription_domain = str(domains.get('subscription', panel_domain)).strip().lower() or panel_domain
     panel_path = str(panel.get('path', '/')).rstrip('/') or '/'
     sub_path = str(panel.get('subscription_path', '/sub')).rstrip('/') or '/sub'
-    tls_block = _tls_block(tls)
-    global_block = '' if tls.mode == 'cloudflare_origin' else f'{{\n    email {domains["acme_email"]}\n}}\n\n'
+    tls_block = _tls_block(context, tls)
+    global_block = '' if tls.mode == 'cloudflare_origin' else f'''{{
+    email {domains["acme_email"]}
+    acme_dns cloudflare {{env.CLOUDFLARE_API_TOKEN}}
+}}
+
+'''
     cidrs = ' '.join(map(str, panel.get('allowed_cidrs', [])))
     allow = f'        @denied not remote_ip {cidrs}\n        respond @denied "Not Found" 404\n' if cidrs else ''
     matcher = '' if panel_path == '/' else f'    @panel path {panel_path} {panel_path}/*\n'
