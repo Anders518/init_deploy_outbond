@@ -37,6 +37,14 @@ def _node_config(context: DeploymentContext) -> dict[str, Any]:
     return value
 
 
+def _anytls_subscription(context: DeploymentContext, existing: dict[str, Any]) -> tuple[str, str]:
+    domains, ports = section(context.config, 'domains'), section(context.config, 'ports')
+    sub_path = str(section(context.config, 'panel').get('subscription_path', '/sub')).rstrip('/') or '/sub'
+    subscription_id = str(existing.get('subscription_id', '')).strip()
+    subscription_id = subscription_id or secrets.token_urlsafe(24).replace('-', '').replace('_', '')
+    return subscription_id, f"https://{domains['subscription']}:{ports['panel_public']}{sub_path}/"
+
+
 def _container_ip(name: str) -> str:
     result = run(
         ['docker', 'inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', name],
@@ -315,9 +323,12 @@ class NodeConfigTask(Task):
         rotate = bool(node_cfg.get('rotate_client_secret', False))
         password = str(existing.get('password', '')) if existing.get('protocol') == 'anytls' and not rotate else ''
         password = password or secrets.token_urlsafe(24)
+        subscription_id, subscription_base = _anytls_subscription(context, existing)
         tag = f"managed-anytls-{int(ports['proxy'])}"
-        client_name = str(node_cfg.get('client_name', 'primary'))
+        display_name = str(node_cfg.get('client_name', 'primary'))
+        client_name = subscription_id
         session = self._sui_session(context)
+        self._sui_save(session, 'settings', 'edit', {'subURI': subscription_base})
         loaded = self._sui_get(session, '/api/load')
         if not loaded.get('success'):
             raise DeployError('Unable to load S-UI configuration')
@@ -343,6 +354,9 @@ class NodeConfigTask(Task):
 
         clients = data.get('clients') or []
         current_client = next((row for row in clients if row.get('name') == client_name), None)
+        if current_client is None:
+            legacy_names = {display_name, str(existing.get('client_name', ''))}
+            current_client = next((row for row in clients if row.get('name') in legacy_names), None)
         client_payload = {
             'id': int(current_client.get('id', 0)) if current_client else 0,
             'enable': True, 'name': client_name,
@@ -384,6 +398,8 @@ class NodeConfigTask(Task):
 
         client = {
             'protocol': 'anytls', 'name': tag, 'client_name': client_name,
+            'display_name': display_name, 'subscription_id': subscription_id,
+            'subscription_url': subscription_base + subscription_id,
             'address': str(domains['node']), 'port': int(ports['proxy']),
             'password': password, 'server_name': str(domains['node']), 'fingerprint': 'chrome',
         }
@@ -393,6 +409,11 @@ class NodeConfigTask(Task):
         return client
 
     def _write_client_configs(self, context: DeploymentContext, client: dict[str, Any]) -> None:
+        try:
+            client_address = ipaddress.ip_address(str(client['address']))
+        except ValueError:
+            client_address = None
+        require_ipv6 = client_address is not None and client_address.version == 6
         if client['protocol'] == 'vless-reality':
             mihomo_proxy = {
                 'name': 'managed-node', 'type': 'vless', 'server': client['address'],
@@ -424,7 +445,7 @@ class NodeConfigTask(Task):
             }
         # JSON is valid YAML, avoiding a runtime YAML dependency.
         mihomo = {'mixed-port': 19081, 'allow-lan': False, 'mode': 'global', 'log-level': 'info',
-                  'ipv6': False, 'proxies': [mihomo_proxy],
+                  'ipv6': require_ipv6, 'proxies': [mihomo_proxy],
                   'proxy-groups': [{'name': 'GLOBAL', 'type': 'select', 'proxies': ['managed-node']}]}
         singbox = {'log': {'level': 'info', 'timestamp': True},
                    'inbounds': [{'type': 'mixed', 'tag': 'mixed-in', 'listen': '127.0.0.1',
@@ -475,6 +496,7 @@ class NodeConfigTask(Task):
             if not loaded.get('success'):
                 raise DeployError('Unable to load S-UI configuration for verification')
             data = loaded.get('obj') or {}
+            expected_sub_uri = str(client.get('subscription_url', '')).rsplit('/', 1)[0] + '/'
             inbound = next(
                 (row for row in data.get('inbounds') or []
                  if row.get('tag') == client.get('name')
@@ -501,6 +523,7 @@ class NodeConfigTask(Task):
                 and server_tls.get('certificate_path') == '/root/cert/node.crt'
                 and server_tls.get('key_path') == '/root/cert/node.key'
                 and client.get('client_name') in (inbound.get('users') or [])
+                and data.get('subURI') == expected_sub_uri
             )
             if not valid:
                 raise DeployError('sing-box runtime AnyTLS fields do not match the persisted client configuration')

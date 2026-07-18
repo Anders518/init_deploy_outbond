@@ -10,6 +10,7 @@ from vpsdeploy.tasks.ipv6_connectivity import IPv6ConnectivityTask
 from vpsdeploy.tasks.proxy_stack_recreate import ProxyStackTask
 from vpsdeploy.tasks.node_config import NodeConfigTask, NodeVerifyTask
 from vpsdeploy.tasks.ssh_hardening import SSHHardeningTask
+from vpsdeploy.tasks.ufw import UFWTask
 from vpsdeploy.tasks.sub2api import Sub2APITask
 from vpsdeploy.tasks.system_hardening import SystemHardeningTask
 from vpsdeploy.tasks.unattended_upgrades import UnattendedUpgradesTask
@@ -25,6 +26,7 @@ DEPLOY_TASKS = [
     NodeVerifyTask(),
     Sub2APITask(),
     SSHHardeningTask(),
+    UFWTask(),
     Fail2BanTask(),
     UnattendedUpgradesTask(),
     SystemHardeningTask(),

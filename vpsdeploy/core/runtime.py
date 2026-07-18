@@ -11,6 +11,30 @@ class DeployError(RuntimeError):
     pass
 
 
+@dataclass
+class FileSnapshot:
+    path: Path
+    existed: bool
+    content: bytes = b''
+    mode: int = 0o600
+
+    @classmethod
+    def capture(cls, path: Path) -> 'FileSnapshot':
+        if not path.exists():
+            return cls(path, False)
+        return cls(path, True, path.read_bytes(), path.stat().st_mode & 0o777)
+
+    def restore(self) -> None:
+        if not self.existed:
+            self.path.unlink(missing_ok=True)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(f'.{self.path.name}.vpsdeploy-rollback')
+        temporary.write_bytes(self.content)
+        temporary.chmod(self.mode)
+        temporary.replace(self.path)
+
+
 def run(
     command: list[str],
     *,
@@ -93,6 +117,12 @@ class Task:
     def verify(self, context: DeploymentContext) -> None:
         pass
 
+    def prepare_rollback(self, context: DeploymentContext) -> Any:
+        return None
+
+    def rollback(self, context: DeploymentContext, snapshot: Any) -> None:
+        pass
+
     def execute(self, context: DeploymentContext) -> None:
         if not self.enabled(context):
             print(f'[skip] {self.name}')
@@ -101,5 +131,17 @@ class Task:
         self.validate(context)
         if context.dry_run:
             return
-        self.apply(context)
-        self.verify(context)
+        snapshot = self.prepare_rollback(context)
+        try:
+            self.apply(context)
+            self.verify(context)
+        except Exception as exc:
+            try:
+                self.rollback(context, snapshot)
+            except Exception as rollback_exc:
+                raise DeployError(
+                    f'{self.name} failed ({exc}); automatic rollback also failed: {rollback_exc}'
+                ) from exc
+            if snapshot is not None:
+                print(f'[rollback] {self.name} restored its previous state')
+            raise

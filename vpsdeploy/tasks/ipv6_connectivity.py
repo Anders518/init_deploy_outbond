@@ -71,11 +71,26 @@ class IPv6ConnectivityTask(Task):
 
         address, interface = detected
         if self._host_probe(cfg) and self._docker_probe(context, cfg):
-            report = {'ready': True, 'repaired': False, 'address': address,
+            sysctl_path = Path(str(cfg.get('sysctl_file', '/etc/sysctl.d/90-vpsdeploy-ipv6.conf')))
+            snapshot = FileSnapshot.capture(sysctl_path)
+            runtime = self._runtime_values(interface)
+            try:
+                self._write_sysctl(sysctl_path, interface)
+                run(['sysctl', '--load', str(sysctl_path)])
+                self._wait_default_route(int(cfg.get('route_wait_seconds', 20)))
+                if not self._host_probe(cfg) or not self._docker_probe(context, cfg):
+                    raise DeployError('IPv6 probe failed after loading persistent sysctl settings')
+            except Exception as exc:
+                rollback_error = self._rollback([snapshot], runtime, interface, False)
+                if rollback_error:
+                    raise DeployError(f'IPv6 persistence failed and rollback also failed: {rollback_error}') from exc
+                self._fallback(context, address, interface, f'persistence_failed: {type(exc).__name__}')
+                return
+            report = {'ready': True, 'repaired': False, 'persistent': True, 'address': address,
                       'interface': interface, 'checked_at': int(time.time())}
             context.state.update({'ipv6_ready': True, 'ipv6_address': address})
             write_file(report_path, json.dumps(report, indent=2), 0o600)
-            print(f'[ipv6] host and Docker IPv6 verified: {address}')
+            print(f'[ipv6] host, Docker and persistent RA settings verified: {address}')
             return
 
         if not bool(cfg.get('auto_repair', True)):

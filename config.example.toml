@@ -208,6 +208,8 @@ enabled = false
 enabled = false
 current_port = 22
 new_port = 4522
+# Keep both ports during migration; set false only after testing the new port through the cloud firewall.
+keep_current_port = true
 create_admin_user = true
 admin_user = "deploy"
 copy_root_authorized_keys = true
@@ -233,6 +235,15 @@ ban_time = "1h"
 ignore_ips = []
 readiness_timeout = 15
 readiness_interval = 1.0
+
+# Disabled by default: prefer the cloud provider firewall/security group.
+# If enabled, SSH, proxy, panel/subscription, and configured published ports are allowed.
+[hardening.ufw]
+enabled = false
+default_incoming = "deny"
+default_outgoing = "allow"
+logging = true
+logging_level = "low"
 
 [hardening.unattended_upgrades]
 enabled = true

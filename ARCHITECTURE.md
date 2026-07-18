@@ -14,6 +14,7 @@ vpsdeploy/
 │   ├── proxy_stack.py
 │   ├── node_config.py       protocol provisioning and dual-core verification
 │   ├── ssh_hardening.py
+│   ├── ufw.py                optional host firewall (disabled by default)
 │   ├── fail2ban.py
 │   ├── unattended_upgrades.py
 │   ├── system_hardening.py
@@ -26,7 +27,7 @@ vpsdeploy/
     └── render.py
 ```
 
-Tasks implement a common lifecycle: `enabled`, `validate`, `apply`, and `verify`. Providers isolate replaceable implementations such as automatic Cloudflare Origin CA issuance and ACME DNS-01. Templates contain only rendering logic.
+Tasks implement a common lifecycle: `enabled`, `validate`, `prepare_rollback`, `apply`, `verify`, and `rollback`. A failure in either application or post-apply verification invokes rollback automatically; rollback failures preserve both the original and recovery errors. Providers isolate replaceable implementations such as automatic Cloudflare Origin CA issuance and ACME DNS-01. Templates contain only rendering logic.
 
 ## Commands
 

@@ -9,7 +9,7 @@ import shutil
 import string
 from pathlib import Path
 
-from vpsdeploy.core.runtime import DeployError, DeploymentContext, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeployError, DeploymentContext, FileSnapshot, Task, run, section, write_file
 
 
 class SSHHardeningTask(Task):
@@ -73,6 +73,38 @@ class SSHHardeningTask(Task):
         if first != second:
             raise DeployError('Admin password confirmation does not match')
         return first, None
+
+    def prepare_rollback(self, context: DeploymentContext) -> dict:
+        cfg = section(context.config, 'hardening.ssh')
+        candidates = [
+            Path('/etc/ssh/sshd_config'), self._managed_config,
+            Path('/etc/passwd'), Path('/etc/shadow'), Path('/etc/group'), Path('/etc/gshadow'),
+        ]
+        dropin_dir = Path('/etc/ssh/sshd_config.d')
+        if dropin_dir.is_dir():
+            candidates.extend(sorted(dropin_dir.glob('*.conf')))
+        username = str(cfg.get('admin_user', 'deploy'))
+        candidates.append(Path(f'/etc/sudoers.d/90-{username}'))
+        try:
+            user = pwd.getpwnam(username)
+        except KeyError:
+            user = None
+        if user is not None:
+            candidates.append(Path(user.pw_dir) / '.ssh/authorized_keys')
+        return {
+            'files': [FileSnapshot.capture(path) for path in dict.fromkeys(candidates)],
+            'user_existed': user is not None,
+            'username': username,
+        }
+
+    def rollback(self, context: DeploymentContext, snapshot: dict) -> None:
+        if not snapshot['user_existed'] and re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', snapshot['username']):
+            run(['userdel', '--remove', snapshot['username']], check=False)
+        for item in snapshot['files']:
+            item.restore()
+        run(['sshd', '-t'])
+        if run(['systemctl', 'reload', 'ssh'], check=False).returncode != 0:
+            run(['systemctl', 'reload', 'sshd'])
 
     @classmethod
     def _neutralize_conflicting_directive(cls, directive: str) -> None:
@@ -166,6 +198,9 @@ class SSHHardeningTask(Task):
             'KbdInteractiveAuthentication no',
             'PermitRootLogin no' if cfg.get('disable_root_login') else 'PermitRootLogin prohibit-password',
         ]
+        current_port = int(cfg.get('current_port', 22))
+        if bool(cfg.get('keep_current_port', True)) and current_port != port:
+            lines.insert(1, f'Port {current_port}')
         if cfg.get('allow_users'):
             lines.append('AllowUsers ' + ' '.join(map(str, cfg['allow_users'])))
         if cfg.get('disable_tcp_forwarding'):
@@ -185,6 +220,11 @@ class SSHHardeningTask(Task):
         result = run(['ss', '-H', '-ltn', f'sport = :{port}'], check=False, capture=True)
         if not result.stdout.strip():
             raise DeployError(f'SSH is not listening on {port}; keep current session open')
+        if bool(cfg.get('keep_current_port', True)):
+            current_port = str(cfg.get('current_port', 22))
+            current = run(['ss', '-H', '-ltn', f'sport = :{current_port}'], check=False, capture=True)
+            if not current.stdout.strip():
+                raise DeployError(f'SSH transition port {current_port} is not listening')
 
         effective = run(['sshd', '-T'], capture=True).stdout
         settings: dict[str, str] = {}

@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from vpsdeploy.application import DEPLOY_TASKS
-from vpsdeploy.core.runtime import DeploymentContext
+import pytest
+
+from vpsdeploy.core.runtime import DeploymentContext, DeployError, Task
 from vpsdeploy.tasks.certificates import CertificateTask
 
 
@@ -43,3 +45,47 @@ def test_certificate_provider_selection(tmp_path: Path) -> None:
     task = CertificateTask()
     provider = task._provider(DeploymentContext(config(tmp_path)))
     assert provider.__class__.__name__ == "AcmeDNSProvider"
+
+
+def test_task_rolls_back_when_post_apply_verification_fails(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class FailingTask(Task):
+        name = 'failing-hardening'
+
+        def prepare_rollback(self, context: DeploymentContext) -> str:
+            events.append('snapshot')
+            return 'before'
+
+        def apply(self, context: DeploymentContext) -> None:
+            events.append('apply')
+
+        def verify(self, context: DeploymentContext) -> None:
+            events.append('verify')
+            raise DeployError('verification failed')
+
+        def rollback(self, context: DeploymentContext, snapshot: str) -> None:
+            assert snapshot == 'before'
+            events.append('rollback')
+
+    with pytest.raises(DeployError, match='verification failed'):
+        FailingTask().execute(DeploymentContext(config(tmp_path)))
+
+    assert events == ['snapshot', 'apply', 'verify', 'rollback']
+
+
+def test_task_reports_rollback_failure_without_hiding_original_error(tmp_path: Path) -> None:
+    class BrokenRollbackTask(Task):
+        name = 'broken-rollback'
+
+        def prepare_rollback(self, context: DeploymentContext) -> bool:
+            return True
+
+        def apply(self, context: DeploymentContext) -> None:
+            raise DeployError('apply failed')
+
+        def rollback(self, context: DeploymentContext, snapshot: bool) -> None:
+            raise OSError('restore failed')
+
+    with pytest.raises(DeployError, match='apply failed.*restore failed'):
+        BrokenRollbackTask().execute(DeploymentContext(config(tmp_path)))

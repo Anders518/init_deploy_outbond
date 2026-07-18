@@ -129,3 +129,9 @@ def validate_config(config: dict[str, Any]) -> None:
     new_ssh_port = validate_port(ssh_cfg.get("new_port"), "hardening.ssh.new_port")
     if new_ssh_port in values.values():
         raise DeployError("The new SSH port conflicts with a proxy-stack port")
+    ufw_cfg = section(config, 'hardening').get('ufw', {})
+    if not isinstance(ufw_cfg, dict):
+        raise DeployError('hardening.ufw must be a TOML table')
+    for key, default in (('default_incoming', 'deny'), ('default_outgoing', 'allow')):
+        if str(ufw_cfg.get(key, default)).lower() not in {'allow', 'deny', 'reject'}:
+            raise DeployError(f'hardening.ufw.{key} must be allow, deny, or reject')

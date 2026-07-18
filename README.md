@@ -19,7 +19,7 @@
 - Cloudflare Proxy + Origin CA 长期证书
 - 可选 Cloudflare DNS-01 ACME 模式
 - 可选 SSH 端口修改与密钥登录加固
-- 可选普通管理用户、Fail2Ban、自动安全更新和 sysctl 加固
+- 可选普通管理用户、UFW、Fail2Ban、自动安全更新和 sysctl 加固
 - 部署前配置备份
 - 3x-ui 与 S-UI（sing-box/AnyTLS）互斥选择
 - 自动创建 VLESS Reality 或 AnyTLS 入站、用户和客户端配置
@@ -235,7 +235,7 @@ sudo uv run --no-dev --frozen python deploy.py deploy
 sudo uv run --no-dev --frozen python deploy.py tui
 ```
 
-TUI 支持完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、状态与凭据查看。密码通过环境变量和临时 `0600` 配置传给子进程，不写入主配置。
+TUI 支持交互式生成核心配置、完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、Sub2API 配置部署、状态与凭据查看。向导先使用临时 `0600` 配置完成部署验收，成功后才原子更新主配置；密码通过临时环境变量传给子进程，不写入主配置。
 
 ## IPv6 自动修复与回退
 
@@ -360,6 +360,21 @@ User password: root-only node state
 ## SSH 加固
 
 加固默认关闭。建议分两次执行，避免锁死 SSH。
+
+UFW 同样默认关闭，优先使用云服务商的防火墙或安全组。确需主机防火墙时，在 `[hardening] enabled = true` 的基础上设置：
+
+```toml
+[hardening.ufw]
+enabled = true
+default_incoming = "deny"
+default_outgoing = "allow"
+logging = true
+logging_level = "low"
+```
+
+部署器会在启用 UFW 前先放行当前/新 SSH 端口、节点端口和面板/订阅端口。Docker 公开端口仍受 Docker iptables 规则影响，因此不应把 UFW 当作云防火墙的替代品。
+
+所有加固任务均使用自动回退生命周期。SSH、UFW、Fail2Ban、自动更新或 sysctl 在应用或后置验证阶段失败时，会恢复变更前的配置文件、服务启用/运行状态及相关运行时设置。SSH 回退还会恢复账号数据库、sudoers、authorized_keys 和原监听配置；若回退本身失败，部署器会同时报告原始错误与回退错误，不会把部分成功误报为完成。
 
 首次：
 

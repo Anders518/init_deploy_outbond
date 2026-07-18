@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vpsdeploy.core.runtime import DeploymentContext, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeploymentContext, FileSnapshot, Task, run, section, write_file
 
 
 class SystemHardeningTask(Task):
@@ -40,3 +40,32 @@ class SystemHardeningTask(Task):
             ]
         write_file(Path('/etc/sysctl.d/99-vps-hardening.conf'), '\n'.join(values), 0o644)
         run(['sysctl', '--system'])
+
+    def prepare_rollback(self, context: DeploymentContext) -> dict:
+        keys = [
+            'net.ipv4.conf.all.accept_source_route', 'net.ipv4.conf.default.accept_source_route',
+            'net.ipv6.conf.all.accept_source_route', 'net.ipv6.conf.default.accept_source_route',
+            'net.ipv4.tcp_syncookies', 'kernel.kptr_restrict', 'kernel.dmesg_restrict',
+            'kernel.unprivileged_bpf_disabled', 'fs.protected_hardlinks', 'fs.protected_symlinks',
+            'net.ipv4.conf.all.accept_redirects', 'net.ipv4.conf.default.accept_redirects',
+            'net.ipv6.conf.all.accept_redirects', 'net.ipv6.conf.default.accept_redirects',
+            'net.ipv4.conf.all.send_redirects', 'net.ipv4.conf.default.send_redirects',
+        ]
+        values: dict[str, str] = {}
+        for key in keys:
+            result = run(['sysctl', '-n', key], check=False, capture=True)
+            if result.returncode == 0:
+                values[key] = result.stdout.strip()
+        apport = {
+            unit: run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0
+            for unit in ('apport.service', 'apport-autoreport.path')
+        }
+        return {'file': FileSnapshot.capture(Path('/etc/sysctl.d/99-vps-hardening.conf')),
+                'values': values, 'apport': apport}
+
+    def rollback(self, context: DeploymentContext, snapshot: dict) -> None:
+        snapshot['file'].restore()
+        for key, value in snapshot['values'].items():
+            run(['sysctl', '-w', f'{key}={value}'])
+        for unit, active in snapshot['apport'].items():
+            run(['systemctl', 'start' if active else 'stop', unit], check=False)

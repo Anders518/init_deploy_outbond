@@ -11,10 +11,12 @@ from vpsdeploy.providers.tls.base import TLSMaterial
 from vpsdeploy.tasks import proxy_stack
 from vpsdeploy.tasks.proxy_stack import ProxyStackTask
 from vpsdeploy.templates.render import render_caddy, render_compose
-from vpsdeploy.tasks.node_config import NodeConfigTask
+from vpsdeploy.tasks.node_config import NodeConfigTask, _anytls_subscription
 from vpsdeploy.core import runtime
-from vpsdeploy.tui import set_toml_value
+from vpsdeploy.tui import apply_core_config, apply_sub2api_config, set_toml_value
 from vpsdeploy.tasks.ipv6_connectivity import FileSnapshot
+from vpsdeploy.tasks.ufw import UFWTask
+from vpsdeploy.tasks import ufw
 
 
 def base_config(tmp_path: Path) -> dict:
@@ -58,7 +60,7 @@ def base_config(tmp_path: Path) -> dict:
             'enable_ipv6': False,
         },
         'hardening': {
-            'ssh': {'new_port': 4522},
+            'ssh': {'new_port': 4522, 'current_port': 22, 'keep_current_port': True},
         },
     }
 
@@ -147,6 +149,35 @@ def test_client_configs_include_both_validation_cores(tmp_path: Path, protocol: 
     assert singbox['outbounds'][0]['type'] == expected
 
 
+def test_ipv6_client_configs_enable_mihomo_ipv6(tmp_path: Path) -> None:
+    context = DeploymentContext(base_config(tmp_path))
+    client = {
+        'protocol': 'anytls', 'address': '2001:db8::10', 'port': 443,
+        'password': 'secret', 'server_name': 'node.example.net', 'fingerprint': 'chrome',
+    }
+
+    NodeConfigTask()._write_client_configs(context, client)
+
+    mihomo = json.loads((tmp_path / 'state/mihomo-test.yaml').read_text())
+    assert mihomo['ipv6'] is True
+    assert mihomo['proxies'][0]['server'] == '2001:db8::10'
+
+
+def test_anytls_subscription_is_external_opaque_and_persistent(tmp_path: Path) -> None:
+    config = base_config(tmp_path)
+    config['panel']['backend'] = 's-ui'
+    context = DeploymentContext(config)
+
+    generated, base = _anytls_subscription(context, {})
+    reused, repeated_base = _anytls_subscription(context, {'subscription_id': generated})
+
+    assert base == 'https://sub.example.net:8443/sub/'
+    assert repeated_base == base
+    assert reused == generated
+    assert generated != 'primary'
+    assert len(generated) >= 24
+
+
 def test_command_log_redacts_password(monkeypatch: pytest.MonkeyPatch,
                                       capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
@@ -198,6 +229,32 @@ def test_tui_adds_missing_toml_key_and_section() -> None:
     assert '[node]\nrotate_client_secret = true' in changed
 
 
+def test_tui_core_wizard_updates_deployment_fields() -> None:
+    changed = apply_core_config('[domains]\npanel = "old.example.net"\n', {
+        'panel_domain': 'panel.example.net', 'subscription_domain': 'sub.example.net',
+        'node_domain': 'node.example.net', 'acme_email': 'admin@example.net',
+        'backend': 's-ui', 'tls_mode': 'acme_dns', 'panel_public_port': 8443,
+        'client_name': 'home',
+    })
+
+    assert 'panel = "panel.example.net"' in changed
+    assert 'subscription = "sub.example.net"' in changed
+    assert '[panel]\nbackend = "s-ui"' in changed
+    assert '[panel.tls]\nmode = "acme_dns"' in changed
+    assert '[ports]\npanel_public = 8443' in changed
+
+
+def test_tui_sub2api_wizard_never_persists_plaintext_password() -> None:
+    changed = apply_sub2api_config('[sub2api]\nenabled = false\n', {
+        'enabled': True, 'domain': 'api.example.net', 'admin_email': 'admin@example.net',
+    })
+
+    assert 'enabled = true' in changed
+    assert 'domain = "api.example.net"' in changed
+    assert 'admin_password_mode = "generate"' in changed
+    assert 'admin_password =' not in changed
+
+
 def test_ipv6_file_snapshot_restores_existing_and_removes_created(tmp_path: Path) -> None:
     existing = tmp_path / 'existing.conf'
     existing.write_text('before\n')
@@ -214,3 +271,51 @@ def test_ipv6_file_snapshot_restores_existing_and_removes_created(tmp_path: Path
     assert existing.read_text() == 'before\n'
     assert existing.stat().st_mode & 0o777 == 0o640
     assert not created.exists()
+
+
+def test_ufw_is_opt_in_and_allows_required_ports_before_enable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = base_config(tmp_path)
+    config['hardening']['enabled'] = True
+    config['hardening']['ufw'] = {'enabled': False}
+    context = DeploymentContext(config)
+    assert UFWTask().enabled(context) is False
+
+    config['hardening']['ufw']['enabled'] = True
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        status = 'Status: active\nufw allow 22/tcp\nufw allow 443/tcp\nufw allow 8443/tcp\n'
+        return subprocess.CompletedProcess(command, 0, status, '')
+
+    monkeypatch.setattr(ufw, 'run', fake_run)
+    UFWTask().execute(context)
+
+    assert ['apt-get', '-o', 'Dpkg::Options::=--force-confmiss', 'install', '-y', 'ufw'] in commands
+    enable_index = commands.index(['ufw', '--force', 'enable'])
+    assert commands.index(['ufw', 'allow', '22/tcp', 'comment', 'vpsdeploy SSH']) < enable_index
+    assert commands.index(['ufw', 'allow', '443/tcp', 'comment', 'vpsdeploy proxy']) < enable_index
+    assert commands.index(['ufw', 'allow', '8443/tcp', 'comment', 'vpsdeploy panel and subscription']) < enable_index
+
+
+def test_ufw_keeps_old_ssh_port_during_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = base_config(tmp_path)
+    config['hardening'].update(enabled=True, ufw={'enabled': True})
+    config['hardening']['ssh']['enabled'] = True
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        status = 'Status: active\nufw allow 22/tcp\nufw allow 4522/tcp\nufw allow 443/tcp\nufw allow 8443/tcp\n'
+        return subprocess.CompletedProcess(command, 0, status, '')
+
+    monkeypatch.setattr(ufw, 'run', fake_run)
+    monkeypatch.setattr(ufw.shutil, 'which', lambda name: '/usr/sbin/ufw')
+    UFWTask().execute(DeploymentContext(config))
+
+    assert ['ufw', 'allow', '22/tcp', 'comment', 'vpsdeploy SSH transition'] in commands
+    assert ['ufw', 'allow', '4522/tcp', 'comment', 'vpsdeploy SSH'] in commands

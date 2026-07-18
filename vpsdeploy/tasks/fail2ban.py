@@ -10,6 +10,7 @@ from vpsdeploy.core.runtime import (
     run,
     section,
     write_file,
+    FileSnapshot,
 )
 
 
@@ -25,6 +26,11 @@ class Fail2BanTask(Task):
     def apply(self, context: DeploymentContext) -> None:
         cfg = section(context.config, 'hardening.fail2ban')
         ssh = section(context.config, 'hardening.ssh')
+        ssh_port = str(ssh['new_port'] if ssh.get('enabled', False) else ssh.get('current_port', 22))
+        if ssh.get('enabled', False) and ssh.get('keep_current_port', True):
+            current_port = str(ssh.get('current_port', 22))
+            if current_port != ssh_port:
+                ssh_port = f'{current_port},{ssh_port}'
         ignore = ' '.join(
             ['127.0.0.1/8', '::1', *map(str, cfg.get('ignore_ips', []))]
         )
@@ -34,7 +40,7 @@ class Fail2BanTask(Task):
             Path('/etc/fail2ban/jail.d/sshd-hardening.local'),
             f'''[sshd]
 enabled = true
-port = {ssh['new_port']}
+port = {ssh_port}
 backend = systemd
 maxretry = {cfg.get('max_retry', 5)}
 findtime = {cfg.get('find_time', '10m')}
@@ -49,6 +55,23 @@ ignoreip = {ignore}
         run(['systemctl', 'enable', 'fail2ban'])
         run(['systemctl', 'restart', 'fail2ban'])
         self._wait_until_ready(context)
+
+    def prepare_rollback(self, context: DeploymentContext) -> dict:
+        active = run(['systemctl', 'is-active', '--quiet', 'fail2ban'], check=False)
+        enabled = run(['systemctl', 'is-enabled', '--quiet', 'fail2ban'], check=False)
+        return {'active': active.returncode == 0, 'enabled': enabled.returncode == 0,
+                'file': FileSnapshot.capture(Path('/etc/fail2ban/jail.d/sshd-hardening.local'))}
+
+    def rollback(self, context: DeploymentContext, snapshot: dict) -> None:
+        snapshot['file'].restore()
+        if snapshot['enabled']:
+            run(['systemctl', 'enable', 'fail2ban'], check=False)
+        else:
+            run(['systemctl', 'disable', 'fail2ban'], check=False)
+        if snapshot['active']:
+            run(['systemctl', 'restart', 'fail2ban'])
+        else:
+            run(['systemctl', 'stop', 'fail2ban'], check=False)
 
     def verify(self, context: DeploymentContext) -> None:
         self._wait_until_ready(context)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vpsdeploy.core.runtime import DeploymentContext, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeploymentContext, FileSnapshot, Task, run, section, write_file
 
 
 class UnattendedUpgradesTask(Task):
@@ -20,3 +20,19 @@ class UnattendedUpgradesTask(Task):
         write_file(Path('/etc/apt/apt.conf.d/52proxy-stack-unattended'),
                    f'Unattended-Upgrade::Automatic-Reboot "{reboot}";\nUnattended-Upgrade::Automatic-Reboot-Time "{cfg.get("reboot_time", "04:30")}";\nUnattended-Upgrade::Remove-Unused-Kernel-Packages "true";\nUnattended-Upgrade::Remove-Unused-Dependencies "true";', 0o644)
         run(['systemctl', 'enable', '--now', 'unattended-upgrades.service'], check=False)
+
+    def prepare_rollback(self, context: DeploymentContext) -> dict:
+        active = run(['systemctl', 'is-active', '--quiet', 'unattended-upgrades.service'], check=False)
+        enabled = run(['systemctl', 'is-enabled', '--quiet', 'unattended-upgrades.service'], check=False)
+        return {'active': active.returncode == 0, 'enabled': enabled.returncode == 0, 'files': [
+            FileSnapshot.capture(Path('/etc/apt/apt.conf.d/20auto-upgrades')),
+            FileSnapshot.capture(Path('/etc/apt/apt.conf.d/52proxy-stack-unattended')),
+        ]}
+
+    def rollback(self, context: DeploymentContext, snapshot: dict) -> None:
+        for item in snapshot['files']:
+            item.restore()
+        action = 'enable' if snapshot['enabled'] else 'disable'
+        run(['systemctl', action, 'unattended-upgrades.service'], check=False)
+        action = 'start' if snapshot['active'] else 'stop'
+        run(['systemctl', action, 'unattended-upgrades.service'], check=False)

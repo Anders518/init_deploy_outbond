@@ -50,6 +50,32 @@ def set_toml_value(text: str, section: str, key: str, value: object) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def apply_core_config(text: str, values: dict[str, object]) -> str:
+    mapping = {
+        'panel_domain': ('domains', 'panel'),
+        'subscription_domain': ('domains', 'subscription'),
+        'node_domain': ('domains', 'node'),
+        'acme_email': ('domains', 'acme_email'),
+        'backend': ('panel', 'backend'),
+        'tls_mode': ('panel.tls', 'mode'),
+        'panel_public_port': ('ports', 'panel_public'),
+        'client_name': ('node', 'client_name'),
+    }
+    for name, (section, key) in mapping.items():
+        if name in values:
+            text = set_toml_value(text, section, key, values[name])
+    return text
+
+
+def apply_sub2api_config(text: str, values: dict[str, object]) -> str:
+    for key in ('enabled', 'domain', 'admin_email'):
+        if key in values:
+            text = set_toml_value(text, 'sub2api', key, values[key])
+    if values.get('enabled'):
+        text = set_toml_value(text, 'sub2api', 'admin_password_mode', 'generate')
+    return text
+
+
 def _atomic_write(path: Path, text: str) -> None:
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     temporary = path.with_name(f'.{path.name}.tui.tmp')
@@ -70,12 +96,14 @@ class DeploymentTUI:
         while True:
             backend = self._backend()
             options: list[tuple[str, Callable[[], None] | None]] = [
+                ('交互式生成/更新核心配置', self._configure_core),
                 ('完整部署并自动验收', self._full_deploy),
                 (f'切换节点协议（当前：{self._protocol_name(backend)}）', self._switch_backend),
                 ('修改网关与面板账号密码', self._change_credentials),
                 ('轮换当前节点客户端凭据', self._rotate_node),
                 ('运行 Mihomo + sing-box 验收', self._verify_node),
                 ('检测/修复 IPv6（失败自动回退）', self._repair_ipv6),
+                ('配置并部署 Sub2API', self._configure_sub2api),
                 ('查看服务状态', self._status),
                 ('显示当前凭据（敏感）', self._credentials),
                 ('退出', None),
@@ -159,6 +187,86 @@ class DeploymentTUI:
     def _full_deploy(self) -> None:
         code = self._shell(['deploy'])
         self.message = '完整部署成功' if code == 0 else f'完整部署失败，退出码 {code}'
+
+    def _load_config(self) -> dict:
+        import tomllib
+        with self.config_path.open('rb') as handle:
+            return tomllib.load(handle)
+
+    @staticmethod
+    def _ask(prompt: str, current: object) -> str:
+        value = input(f'{prompt} [{current}]: ').strip()
+        return value or str(current)
+
+    def _configure_core(self) -> None:
+        config = self._load_config()
+        domains, panel = config.get('domains', {}), config.get('panel', {})
+        ports, node = config.get('ports', {}), config.get('node', {})
+        tls = panel.get('tls', {})
+        curses.endwin()
+        try:
+            values: dict[str, object] = {
+                'panel_domain': self._ask('面板域名', domains.get('panel', 'panel.example.net')),
+                'subscription_domain': self._ask('订阅域名', domains.get('subscription', 'sub.example.net')),
+                'node_domain': self._ask('节点域名', domains.get('node', 'node.example.net')),
+                'acme_email': self._ask('ACME 邮箱', domains.get('acme_email', 'admin@example.net')),
+                'client_name': self._ask('节点显示名称', node.get('client_name', 'primary')),
+            }
+            backend = self._ask('面板后端（3x-ui/s-ui）', panel.get('backend', '3x-ui')).lower()
+            tls_mode = self._ask('TLS 模式（acme_dns/cloudflare_origin）', tls.get('mode', 'acme_dns')).lower()
+            port_text = self._ask('面板公网 HTTPS 端口', ports.get('panel_public', 8443))
+            if backend not in {'3x-ui', 's-ui'} or tls_mode not in {'acme_dns', 'cloudflare_origin'}:
+                raise ValueError('面板后端或 TLS 模式无效')
+            values.update(backend=backend, tls_mode=tls_mode, panel_public_port=int(port_text))
+            changed = apply_core_config(self.config_path.read_text(encoding='utf-8'), values)
+            code = self._shell(['deploy'], config_text=changed)
+            if code == 0:
+                _atomic_write(self.config_path, changed)
+                self.message = '核心配置已生成并完成部署验收'
+            else:
+                self.message = '核心配置部署失败，主配置未修改'
+        except (ValueError, OSError) as exc:
+            input(f'配置无效：{exc}。按 Enter 返回…')
+            self.message = '核心配置未修改'
+        finally:
+            self.screen.refresh()
+
+    def _configure_sub2api(self) -> None:
+        config = self._load_config()
+        current = config.get('sub2api', {})
+        curses.endwin()
+        try:
+            enabled_text = self._ask('启用 Sub2API（yes/no）', 'yes' if current.get('enabled') else 'no').lower()
+            enabled = enabled_text in {'y', 'yes', '1', 'true', '是'}
+            if not enabled:
+                self.message = '已取消 Sub2API 配置；停用不会自动删除现有服务或数据'
+                return
+            domain = self._ask('Sub2API 域名', current.get('domain', 'api.example.net'))
+            email = self._ask('Sub2API 管理员邮箱', current.get('admin_email', 'admin@example.net'))
+            password = getpass.getpass('初始管理员密码（留空则安全生成）: ')
+            if password and password != getpass.getpass('确认初始管理员密码: '):
+                input('密码不一致。按 Enter 返回…')
+                return
+            changed = apply_sub2api_config(self.config_path.read_text(encoding='utf-8'), {
+                'enabled': True, 'domain': domain, 'admin_email': email,
+            })
+            env: dict[str, str] = {}
+            if password:
+                temporary = set_toml_value(changed, 'sub2api', 'admin_password_mode', 'environment')
+                env['VPSDEPLOY_SUB2API_ADMIN_PASSWORD'] = password
+            else:
+                temporary = changed
+            code = self._shell([
+                'deploy', '--task', 'dns-records', '--task', 'certificate',
+                '--task', 'proxy-stack', '--task', 'sub2api',
+            ], env=env, config_text=temporary)
+            if code == 0:
+                _atomic_write(self.config_path, changed)
+                self.message = 'Sub2API 已配置、部署并通过健康检查'
+            else:
+                self.message = 'Sub2API 部署失败，主配置未修改'
+        finally:
+            self.screen.refresh()
 
     def _switch_backend(self) -> None:
         current = self._backend()

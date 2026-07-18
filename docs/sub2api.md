@@ -10,6 +10,8 @@ Only the application joins the existing external `proxy_stack` network. PostgreS
 
 ## Configuration
 
+也可以运行 `sudo uv run --no-dev --frozen python deploy.py tui`，选择“配置并部署 Sub2API”。向导会收集域名、管理员邮箱和可选初始密码，并依次执行 DNS、证书、Caddy 与 Sub2API 任务。只有部署和健康检查成功后才会更新主配置，初始密码不会写入 TOML。
+
 ```toml
 [sub2api]
 enabled = true
