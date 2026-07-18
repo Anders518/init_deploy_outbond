@@ -436,18 +436,19 @@ class NodeConfigTask(Task):
     def verify(self, context: DeploymentContext) -> None:
         client = context.state.get('node_client') or _read_json(context.stack_dir / 'state/node-client.json')
         container = '3x-ui' if _backend(context) == '3x-ui' else 's-ui'
-        runtime_result = run(['docker', 'exec', container, 'cat', '/app/bin/config.json'], capture=True)
-        try:
-            runtime = json.loads(runtime_result.stdout)
-        except json.JSONDecodeError as exc:
-            raise DeployError(f'Unable to parse the {container} runtime configuration') from exc
-        inbound = next(
-            (row for row in runtime.get('inbounds', []) if int(row.get('port', row.get('listen_port', 0))) == int(client['port'])),
-            None,
-        )
-        if not inbound:
-            raise DeployError('Managed node port is absent from the runtime configuration')
         if client['protocol'] == 'vless-reality':
+            runtime_result = run(['docker', 'exec', container, 'cat', '/app/bin/config.json'], capture=True)
+            try:
+                runtime = json.loads(runtime_result.stdout)
+            except json.JSONDecodeError as exc:
+                raise DeployError(f'Unable to parse the {container} runtime configuration') from exc
+            inbound = next(
+                (row for row in runtime.get('inbounds', [])
+                 if int(row.get('port', row.get('listen_port', 0))) == int(client['port'])),
+                None,
+            )
+            if not inbound:
+                raise DeployError('Managed node port is absent from the runtime configuration')
             stream = inbound.get('streamSettings', {})
             reality = stream.get('realitySettings', {})
             users = inbound.get('settings', {}).get('clients', [])
@@ -470,14 +471,36 @@ class NodeConfigTask(Task):
             if not valid:
                 raise DeployError('Xray runtime Reality fields do not match the persisted client configuration')
         else:
-            users = inbound.get('users', [])
-            tls = inbound.get('tls', {})
+            loaded = self._sui_get(self._sui_session(context), '/api/load')
+            if not loaded.get('success'):
+                raise DeployError('Unable to load S-UI configuration for verification')
+            data = loaded.get('obj') or {}
+            inbound = next(
+                (row for row in data.get('inbounds') or []
+                 if row.get('tag') == client.get('name')
+                 and int(row.get('listen_port', 0)) == int(client['port'])),
+                None,
+            )
+            managed_client = next(
+                (row for row in data.get('clients') or []
+                 if row.get('name') == client.get('client_name')),
+                None,
+            )
+            tls = next(
+                (row for row in data.get('tls') or []
+                 if inbound and int(row.get('id', 0)) == int(inbound.get('tls_id', 0))),
+                None,
+            )
+            server_tls = (tls or {}).get('server', {})
             valid = (
-                inbound.get('type') == 'anytls'
-                and bool(tls.get('enabled'))
-                and tls.get('certificate_path') == '/root/cert/node.crt'
-                and tls.get('key_path') == '/root/cert/node.key'
-                and any(row.get('password') == client['password'] for row in users)
+                inbound is not None
+                and inbound.get('type') == 'anytls'
+                and managed_client is not None
+                and int(inbound.get('id', 0)) in [int(value) for value in managed_client.get('inbounds') or []]
+                and bool(server_tls.get('enabled'))
+                and server_tls.get('certificate_path') == '/root/cert/node.crt'
+                and server_tls.get('key_path') == '/root/cert/node.key'
+                and client.get('client_name') in (inbound.get('users') or [])
             )
             if not valid:
                 raise DeployError('sing-box runtime AnyTLS fields do not match the persisted client configuration')
