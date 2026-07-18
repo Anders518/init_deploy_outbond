@@ -235,7 +235,7 @@ sudo uv run --no-dev --frozen python deploy.py deploy
 sudo uv run --no-dev --frozen python deploy.py tui
 ```
 
-TUI 支持交互式生成核心配置、完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、Sub2API 配置部署、状态与凭据查看。向导先使用临时 `0600` 配置完成部署验收，成功后才原子更新主配置；密码通过临时环境变量传给子进程，不写入主配置。
+TUI 支持交互式生成核心配置、完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、系统加固配置部署、Sub2API 配置部署、状态与凭据查看。系统加固向导可配置 SSH 双端口迁移、root/密码登录策略、UFW、Fail2Ban、自动安全更新、sysctl 与 Apport。向导先使用临时 `0600` 配置完成部署验收，成功后才原子更新主配置；密码通过临时环境变量传给子进程，不写入主配置。
 
 ## IPv6 自动修复与回退
 

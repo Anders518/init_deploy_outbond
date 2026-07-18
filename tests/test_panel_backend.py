@@ -13,7 +13,7 @@ from vpsdeploy.tasks.proxy_stack import ProxyStackTask
 from vpsdeploy.templates.render import render_caddy, render_compose
 from vpsdeploy.tasks.node_config import NodeConfigTask, _anytls_subscription
 from vpsdeploy.core import runtime
-from vpsdeploy.tui import apply_core_config, apply_sub2api_config, set_toml_value
+from vpsdeploy.tui import apply_core_config, apply_hardening_config, apply_sub2api_config, set_toml_value
 from vpsdeploy.tasks.ipv6_connectivity import FileSnapshot
 from vpsdeploy.tasks.ufw import UFWTask
 from vpsdeploy.tasks import ufw
@@ -242,6 +242,26 @@ def test_tui_core_wizard_updates_deployment_fields() -> None:
     assert '[panel]\nbackend = "s-ui"' in changed
     assert '[panel.tls]\nmode = "acme_dns"' in changed
     assert '[ports]\npanel_public = 8443' in changed
+
+
+def test_tui_hardening_wizard_updates_security_sections() -> None:
+    changed = apply_hardening_config('[hardening]\nenabled = false\n', {
+        'enabled': True, 'ssh_enabled': True, 'ssh_current_port': 22,
+        'ssh_new_port': 4522, 'ssh_keep_current_port': True,
+        'ssh_disable_root_login': False, 'ssh_disable_password_auth': True,
+        'ufw_enabled': True, 'fail2ban_enabled': True,
+        'unattended_upgrades_enabled': True, 'automatic_reboot': False,
+        'system_sysctl_enabled': True, 'disable_apport': True,
+    })
+
+    assert '[hardening]\nenabled = true' in changed
+    assert '[hardening.ssh]\nenabled = true' in changed
+    assert 'new_port = 4522' in changed
+    assert 'keep_current_port = true' in changed
+    assert '[hardening.ufw]\nenabled = true' in changed
+    assert '[hardening.fail2ban]\nenabled = true' in changed
+    assert '[hardening.unattended_upgrades]\nenabled = true' in changed
+    assert '[hardening.system]\nenable_sysctl = true' in changed
 
 
 def test_tui_sub2api_wizard_never_persists_plaintext_password() -> None:

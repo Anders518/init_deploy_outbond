@@ -76,6 +76,28 @@ def apply_sub2api_config(text: str, values: dict[str, object]) -> str:
     return text
 
 
+def apply_hardening_config(text: str, values: dict[str, object]) -> str:
+    mapping = {
+        'enabled': ('hardening', 'enabled'),
+        'ssh_enabled': ('hardening.ssh', 'enabled'),
+        'ssh_current_port': ('hardening.ssh', 'current_port'),
+        'ssh_new_port': ('hardening.ssh', 'new_port'),
+        'ssh_keep_current_port': ('hardening.ssh', 'keep_current_port'),
+        'ssh_disable_root_login': ('hardening.ssh', 'disable_root_login'),
+        'ssh_disable_password_auth': ('hardening.ssh', 'disable_password_auth'),
+        'ufw_enabled': ('hardening.ufw', 'enabled'),
+        'fail2ban_enabled': ('hardening.fail2ban', 'enabled'),
+        'unattended_upgrades_enabled': ('hardening.unattended_upgrades', 'enabled'),
+        'automatic_reboot': ('hardening.unattended_upgrades', 'automatic_reboot'),
+        'system_sysctl_enabled': ('hardening.system', 'enable_sysctl'),
+        'disable_apport': ('hardening.system', 'disable_apport'),
+    }
+    for name, (section, key) in mapping.items():
+        if name in values:
+            text = set_toml_value(text, section, key, values[name])
+    return text
+
+
 def _atomic_write(path: Path, text: str) -> None:
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     temporary = path.with_name(f'.{path.name}.tui.tmp')
@@ -103,6 +125,7 @@ class DeploymentTUI:
                 ('轮换当前节点客户端凭据', self._rotate_node),
                 ('运行 Mihomo + sing-box 验收', self._verify_node),
                 ('检测/修复 IPv6（失败自动回退）', self._repair_ipv6),
+                ('配置并部署系统加固（失败自动回退）', self._configure_hardening),
                 ('配置并部署 Sub2API', self._configure_sub2api),
                 ('查看服务状态', self._status),
                 ('显示当前凭据（敏感）', self._credentials),
@@ -265,6 +288,83 @@ class DeploymentTUI:
                 self.message = 'Sub2API 已配置、部署并通过健康检查'
             else:
                 self.message = 'Sub2API 部署失败，主配置未修改'
+        finally:
+            self.screen.refresh()
+
+    @staticmethod
+    def _parse_bool(value: str, name: str) -> bool:
+        normalized = value.strip().lower()
+        if normalized in {'y', 'yes', '1', 'true', 'on', '是'}:
+            return True
+        if normalized in {'n', 'no', '0', 'false', 'off', '否'}:
+            return False
+        raise ValueError(f'{name} 必须为 yes 或 no')
+
+    def _ask_bool(self, prompt: str, current: object) -> bool:
+        default = 'yes' if bool(current) else 'no'
+        return self._parse_bool(self._ask(f'{prompt}（yes/no）', default), prompt)
+
+    def _configure_hardening(self) -> None:
+        config = self._load_config()
+        hardening = config.get('hardening', {})
+        ssh = hardening.get('ssh', {})
+        ufw = hardening.get('ufw', {})
+        fail2ban = hardening.get('fail2ban', {})
+        upgrades = hardening.get('unattended_upgrades', {})
+        system = hardening.get('system', {})
+        curses.endwin()
+        try:
+            enabled = self._ask_bool('启用系统加固总开关', hardening.get('enabled', False))
+            values: dict[str, object] = {'enabled': enabled}
+            if enabled:
+                ssh_enabled = self._ask_bool('启用 SSH 加固', ssh.get('enabled', False))
+                values['ssh_enabled'] = ssh_enabled
+                if ssh_enabled:
+                    current_port = int(self._ask('当前 SSH 端口', ssh.get('current_port', 22)))
+                    new_port = int(self._ask('新 SSH 端口', ssh.get('new_port', 4522)))
+                    if not (1 <= current_port <= 65535 and 1 <= new_port <= 65535):
+                        raise ValueError('SSH 端口必须在 1..65535 之间')
+                    values.update(
+                        ssh_current_port=current_port,
+                        ssh_new_port=new_port,
+                        ssh_keep_current_port=self._ask_bool(
+                            '迁移期间保留当前 SSH 端口', ssh.get('keep_current_port', True),
+                        ),
+                        ssh_disable_root_login=self._ask_bool(
+                            '禁止 root SSH 登录', ssh.get('disable_root_login', False),
+                        ),
+                        ssh_disable_password_auth=self._ask_bool(
+                            '禁止 SSH 密码认证（仅密钥）', ssh.get('disable_password_auth', True),
+                        ),
+                    )
+                values.update(
+                    ufw_enabled=self._ask_bool(
+                        '启用 UFW（请先确认云防火墙）', ufw.get('enabled', False),
+                    ),
+                    fail2ban_enabled=self._ask_bool('启用 Fail2Ban', fail2ban.get('enabled', True)),
+                    unattended_upgrades_enabled=self._ask_bool(
+                        '启用自动安全更新', upgrades.get('enabled', True),
+                    ),
+                    automatic_reboot=self._ask_bool(
+                        '自动更新后允许自动重启', upgrades.get('automatic_reboot', False),
+                    ),
+                    system_sysctl_enabled=self._ask_bool(
+                        '启用安全 sysctl', system.get('enable_sysctl', True),
+                    ),
+                    disable_apport=self._ask_bool('禁用 Apport', system.get('disable_apport', True)),
+                )
+            changed = apply_hardening_config(self.config_path.read_text(encoding='utf-8'), values)
+            tasks = ['ssh-hardening', 'ufw', 'fail2ban', 'unattended-upgrades', 'system-hardening']
+            args = ['deploy'] + [item for task in tasks for item in ('--task', task)]
+            code = self._shell(args, config_text=changed)
+            if code == 0:
+                _atomic_write(self.config_path, changed)
+                self.message = '系统加固配置已保存，部署与验证成功'
+            else:
+                self.message = '系统加固失败并已尝试回退，主配置未修改'
+        except (ValueError, OSError) as exc:
+            input(f'配置无效：{exc}。按 Enter 返回…')
+            self.message = '系统加固配置未修改'
         finally:
             self.screen.refresh()
 
