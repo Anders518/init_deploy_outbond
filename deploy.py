@@ -82,6 +82,23 @@ def show_credentials(context: DeploymentContext) -> None:
             if sub_path.is_file():
                 print(f'Metadata source: {sub_path}')
 
+    wg_cfg = context.config.get('wg_easy', {})
+    if isinstance(wg_cfg, dict) and bool(wg_cfg.get('enabled', False)):
+        wg_dir = Path(str(wg_cfg.get('install_dir', '/opt/wg-easy'))).resolve()
+        wg_path = wg_dir / 'state/credentials.json'
+        if wg_path.is_file():
+            found = True
+            data = json.loads(wg_path.read_text(encoding='utf-8'))
+            print('\nwg-easy credentials')
+            print('===================')
+            print(f"Web UI (SSH tunnel only): {data.get('web_url', '')}")
+            print(f"Admin username: {data.get('admin_username', '')}")
+            print(f"Admin password: {data.get('admin_password', '')}")
+            print(f"Private proxy endpoint: {data.get('proxy_endpoint', '')}:{data.get('wireguard_port', '')}/udp")
+            print(f"Mihomo route fragment: {wg_dir / 'state/mihomo-route.yaml'}")
+            print(f"Strict Mihomo WG profile: {wg_dir / 'state/mihomo-wg-gateway.yaml'}")
+            print(f"\nSource: {wg_path}")
+
     if not found:
         raise DeployError('No generated credential files were found')
 

@@ -235,7 +235,7 @@ sudo uv run --no-dev --frozen python deploy.py deploy
 sudo uv run --no-dev --frozen python deploy.py tui
 ```
 
-TUI 支持交互式生成核心配置、完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、系统加固配置部署、Sub2API 配置部署、状态与凭据查看。系统加固向导可配置 SSH 双端口迁移、root/密码登录策略、UFW、Fail2Ban、自动安全更新、sysctl 与 Apport。向导先使用临时 `0600` 配置完成部署验收，成功后才原子更新主配置；密码通过临时环境变量传给子进程，不写入主配置。
+TUI 支持交互式生成核心配置、完整部署、VLESS/AnyTLS 切换、账号密码修改、节点凭据轮换、双内核验收、IPv6 检测/修复、系统加固配置部署、wg-easy 私有覆盖网络、Sub2API 配置部署、状态与凭据查看。系统加固向导可配置 SSH 双端口迁移、root/密码登录策略、UFW、Fail2Ban、自动安全更新、sysctl 与 Apport。向导先使用临时 `0600` 配置完成部署验收，成功后才原子更新主配置；密码通过临时环境变量传给子进程，不写入主配置。
 
 ## IPv6 自动修复与回退
 
@@ -356,6 +356,23 @@ User password: root-only node state
 ```
 
 订阅路径默认不使用 Caddy BasicAuth，因为多数客户端更新订阅时无法处理交互式 BasicAuth。面板路径仍由 Caddy BasicAuth 和 3x-ui 自身认证双重保护。
+
+## wg-easy 私有覆盖网络
+
+`wg_easy.enabled = true` 会部署官方 `ghcr.io/wg-easy/wg-easy:15`。WireGuard UDP 端口不会映射到宿主机，云防火墙和 UFW 也不会放行它；容器仅在 `proxy_stack` Docker 网络获得固定私网 endpoint。组件主机必须同时运行 Mihomo TUN 与 WireGuard，将该 endpoint 的 UDP 流量经 AnyTLS 节点转发。
+
+部署器生成两个 root-only 客户端文件：
+
+- `/opt/wg-easy/state/mihomo-wg-gateway.yaml`：完整严格配置，AnyTLS 强制 `udp: true`，最终规则不含 `DIRECT`。
+- `/opt/wg-easy/state/mihomo-route.yaml`：合并到现有 Mihomo 配置的路由片段。
+
+wg-easy Web UI 只绑定 `127.0.0.1:51821`，通过 SSH 转发访问：
+
+```bash
+ssh -p 4522 -L 51821:127.0.0.1:51821 deploy@SERVER
+```
+
+然后打开 `http://127.0.0.1:51821`。使用 `credentials` 命令查看管理员凭据与私网 endpoint。移动平台通常无法同时运行两个 VPN/TUN 服务，因此该模式主要面向 Linux、Windows、macOS 与支持策略路由的路由器。
 
 ## SSH 加固
 

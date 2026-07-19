@@ -14,6 +14,7 @@ from vpsdeploy.tasks.ufw import UFWTask
 from vpsdeploy.tasks.sub2api import Sub2APITask
 from vpsdeploy.tasks.system_hardening import SystemHardeningTask
 from vpsdeploy.tasks.unattended_upgrades import UnattendedUpgradesTask
+from vpsdeploy.tasks.wg_easy import WGEasyTask
 
 
 DEPLOY_TASKS = [
@@ -25,6 +26,7 @@ DEPLOY_TASKS = [
     NodeConfigTask(),
     NodeVerifyTask(),
     Sub2APITask(),
+    WGEasyTask(),
     SSHHardeningTask(),
     UFWTask(),
     Fail2BanTask(),
@@ -55,6 +57,13 @@ def update(context: DeploymentContext) -> None:
         if (sub_dir / 'docker-compose.yml').is_file():
             run(["docker", "compose", "pull"], cwd=sub_dir)
             run(["docker", "compose", "up", "-d", "--remove-orphans"], cwd=sub_dir)
+    wg_easy = context.config.get('wg_easy', {})
+    if isinstance(wg_easy, dict) and bool(wg_easy.get('enabled', False)):
+        from pathlib import Path
+        wg_dir = Path(str(wg_easy.get('install_dir', '/opt/wg-easy'))).resolve()
+        if (wg_dir / 'docker-compose.yml').is_file():
+            run(["docker", "compose", "pull"], cwd=wg_dir)
+            run(["docker", "compose", "up", "-d", "--remove-orphans"], cwd=wg_dir)
     if bool(section(context.config, "stack").get("prune_dangling_images", True)):
         run(["docker", "image", "prune", "-f"])
     NodeConfigTask().execute(context)

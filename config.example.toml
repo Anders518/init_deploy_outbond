@@ -130,6 +130,8 @@ network_name = "proxy_stack"
 enable_ipv6 = true
 ipv6_subnet = ""
 force_rebuild_caddy = false
+log_max_size = "10m"
+log_max_file = 3
 
 [dns]
 enabled = false
@@ -204,6 +206,23 @@ security_url_allowlist_enabled = true
 allow_insecure_http = false
 allow_private_hosts = false
 
+# Optional private WireGuard overlay. The UDP endpoint is never published on
+# the host; peers must send it through the AnyTLS node with udp: true.
+[wg_easy]
+enabled = false
+install_dir = "/opt/wg-easy"
+image = "ghcr.io/wg-easy/wg-easy:15"
+web_bind = "127.0.0.1"
+web_port = 51821
+wireguard_port = 51820
+admin_username = "admin"
+admin_password_mode = "generate"
+admin_password_env = "VPSDEPLOY_WG_EASY_ADMIN_PASSWORD"
+dns = "1.1.1.1,8.8.8.8"
+ipv4_cidr = "10.66.66.0/24"
+ipv6_cidr = "fd42:66:66::/64"
+readiness_timeout = 120
+
 [hardening]
 enabled = false
 
@@ -258,3 +277,5 @@ disable_apport = true
 enable_sysctl = true
 disable_redirects = true
 remove_admin_from_docker_group = true
+tcp_mtu_probing = true
+tcp_max_syn_backlog = 1024

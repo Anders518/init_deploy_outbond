@@ -98,6 +98,15 @@ def apply_hardening_config(text: str, values: dict[str, object]) -> str:
     return text
 
 
+def apply_wg_easy_config(text: str, values: dict[str, object]) -> str:
+    for key in ('enabled', 'web_port', 'wireguard_port', 'admin_username', 'ipv4_cidr', 'ipv6_cidr'):
+        if key in values:
+            text = set_toml_value(text, 'wg_easy', key, values[key])
+    if values.get('enabled'):
+        text = set_toml_value(text, 'wg_easy', 'admin_password_mode', 'generate')
+    return text
+
+
 def _atomic_write(path: Path, text: str) -> None:
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     temporary = path.with_name(f'.{path.name}.tui.tmp')
@@ -126,6 +135,7 @@ class DeploymentTUI:
                 ('运行 Mihomo + sing-box 验收', self._verify_node),
                 ('检测/修复 IPv6（失败自动回退）', self._repair_ipv6),
                 ('配置并部署系统加固（失败自动回退）', self._configure_hardening),
+                ('配置并部署 wg-easy（仅经代理可达）', self._configure_wg_easy),
                 ('配置并部署 Sub2API', self._configure_sub2api),
                 ('查看服务状态', self._status),
                 ('显示当前凭据（敏感）', self._credentials),
@@ -365,6 +375,34 @@ class DeploymentTUI:
         except (ValueError, OSError) as exc:
             input(f'配置无效：{exc}。按 Enter 返回…')
             self.message = '系统加固配置未修改'
+        finally:
+            self.screen.refresh()
+
+    def _configure_wg_easy(self) -> None:
+        config = self._load_config()
+        current = config.get('wg_easy', {})
+        curses.endwin()
+        try:
+            enabled = self._ask_bool('启用 wg-easy 私有覆盖网络', current.get('enabled', False))
+            values: dict[str, object] = {'enabled': enabled}
+            if enabled:
+                values.update(
+                    web_port=int(self._ask('本机 Web UI 端口（仅 127.0.0.1）', current.get('web_port', 51821))),
+                    wireguard_port=int(self._ask('私网 WireGuard UDP 端口', current.get('wireguard_port', 51820))),
+                    admin_username=self._ask('wg-easy 管理员用户名', current.get('admin_username', 'admin')),
+                    ipv4_cidr=self._ask('WireGuard IPv4 网段', current.get('ipv4_cidr', '10.66.66.0/24')),
+                    ipv6_cidr=self._ask('WireGuard IPv6 网段', current.get('ipv6_cidr', 'fd42:66:66::/64')),
+                )
+            changed = apply_wg_easy_config(self.config_path.read_text(encoding='utf-8'), values)
+            code = self._shell(['deploy', '--task', 'wg-easy'], config_text=changed)
+            if code == 0:
+                _atomic_write(self.config_path, changed)
+                self.message = 'wg-easy 已部署；UDP 未公开，必须经 AnyTLS 代理访问'
+            else:
+                self.message = 'wg-easy 部署失败并已尝试回退，主配置未修改'
+        except (ValueError, OSError) as exc:
+            input(f'配置无效：{exc}。按 Enter 返回…')
+            self.message = 'wg-easy 配置未修改'
         finally:
             self.screen.refresh()
 

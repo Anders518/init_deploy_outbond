@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vpsdeploy.core.runtime import DeploymentContext, FileSnapshot, Task, run, section, write_file
+from vpsdeploy.core.runtime import DeployError, DeploymentContext, FileSnapshot, Task, run, section, write_file
 
 
 class SystemHardeningTask(Task):
@@ -38,6 +38,10 @@ class SystemHardeningTask(Task):
                 'net.ipv4.conf.all.send_redirects = 0',
                 'net.ipv4.conf.default.send_redirects = 0',
             ]
+        if cfg.get('tcp_mtu_probing', True):
+            values.append('net.ipv4.tcp_mtu_probing = 1')
+        syn_backlog = int(cfg.get('tcp_max_syn_backlog', 1024))
+        values.append(f'net.ipv4.tcp_max_syn_backlog = {syn_backlog}')
         write_file(Path('/etc/sysctl.d/99-vps-hardening.conf'), '\n'.join(values), 0o644)
         run(['sysctl', '--system'])
 
@@ -50,6 +54,7 @@ class SystemHardeningTask(Task):
             'net.ipv4.conf.all.accept_redirects', 'net.ipv4.conf.default.accept_redirects',
             'net.ipv6.conf.all.accept_redirects', 'net.ipv6.conf.default.accept_redirects',
             'net.ipv4.conf.all.send_redirects', 'net.ipv4.conf.default.send_redirects',
+            'net.ipv4.tcp_mtu_probing', 'net.ipv4.tcp_max_syn_backlog',
         ]
         values: dict[str, str] = {}
         for key in keys:
@@ -62,6 +67,24 @@ class SystemHardeningTask(Task):
         }
         return {'file': FileSnapshot.capture(Path('/etc/sysctl.d/99-vps-hardening.conf')),
                 'values': values, 'apport': apport}
+
+    def validate(self, context: DeploymentContext) -> None:
+        cfg = section(context.config, 'hardening.system')
+        backlog = cfg.get('tcp_max_syn_backlog', 1024)
+        if not isinstance(backlog, int) or not 128 <= backlog <= 65535:
+            raise DeployError('hardening.system.tcp_max_syn_backlog must be between 128 and 65535')
+
+    def verify(self, context: DeploymentContext) -> None:
+        cfg = section(context.config, 'hardening.system')
+        if not cfg.get('enable_sysctl'):
+            return
+        expected = {'net.ipv4.tcp_max_syn_backlog': str(int(cfg.get('tcp_max_syn_backlog', 1024)))}
+        if cfg.get('tcp_mtu_probing', True):
+            expected['net.ipv4.tcp_mtu_probing'] = '1'
+        for key, value in expected.items():
+            actual = run(['sysctl', '-n', key], capture=True).stdout.strip()
+            if actual != value:
+                raise DeployError(f'{key} is {actual}, expected {value}')
 
     def rollback(self, context: DeploymentContext, snapshot: dict) -> None:
         snapshot['file'].restore()

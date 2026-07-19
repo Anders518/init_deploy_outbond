@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+import re
 from typing import Any
 
 from .common import warn
@@ -109,6 +110,11 @@ def validate_config(config: dict[str, Any]) -> None:
         network = ipaddress.ip_network(subnet, strict=False)
         if network.version != 6:
             raise DeployError("docker.ipv6_subnet must be IPv6")
+    if not re.fullmatch(r'[1-9][0-9]*(?:k|m|g)', str(docker.get('log_max_size', '10m')).lower()):
+        raise DeployError('docker.log_max_size must use a positive k, m, or g size such as 10m')
+    log_files = docker.get('log_max_file', 3)
+    if not isinstance(log_files, int) or not 1 <= log_files <= 20:
+        raise DeployError('docker.log_max_file must be an integer between 1 and 20')
 
     if tls_mode(config) == "cloudflare_origin":
         auto_create = bool(tls.get("auto_create", True))
@@ -135,3 +141,13 @@ def validate_config(config: dict[str, Any]) -> None:
     for key, default in (('default_incoming', 'deny'), ('default_outgoing', 'allow')):
         if str(ufw_cfg.get(key, default)).lower() not in {'allow', 'deny', 'reject'}:
             raise DeployError(f'hardening.ufw.{key} must be allow, deny, or reject')
+    wg_easy = config.get('wg_easy', {})
+    if not isinstance(wg_easy, dict):
+        raise DeployError('wg_easy must be a TOML table')
+    if bool(wg_easy.get('enabled', False)):
+        if str(wg_easy.get('web_bind', '127.0.0.1')) != '127.0.0.1':
+            raise DeployError('wg_easy.web_bind must be loopback')
+        wg_port = validate_port(wg_easy.get('wireguard_port', 51820), 'wg_easy.wireguard_port')
+        web_port = validate_port(wg_easy.get('web_port', 51821), 'wg_easy.web_port')
+        if wg_port == web_port or wg_port in values.values() or web_port in values.values():
+            raise DeployError('wg_easy ports conflict with another configured service')

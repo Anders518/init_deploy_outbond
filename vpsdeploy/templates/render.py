@@ -14,6 +14,17 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
     container_name: s-ui
     restart: unless-stopped
     tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE}"
+        max-file: "${LOG_MAX_FILE}"
+    healthcheck:
+      test: ["CMD", "/app/sui", "admin", "-show"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     environment:
       TZ: ${TZ}
     volumes:
@@ -26,6 +37,17 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
     image: ${XUI_IMAGE}
     container_name: 3x-ui
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE}"
+        max-file: "${LOG_MAX_FILE}"
+    healthcheck:
+      test: ["CMD-SHELL", "test -x /app/x-ui || test -x /app/bin/x-ui"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     environment:
       TZ: ${TZ}
     volumes:
@@ -57,6 +79,17 @@ def render_compose(context: DeploymentContext, tls: TLSMaterial) -> str:
 {build}    image: ${{CADDY_IMAGE}}
     container_name: caddy-panel
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "${{LOG_MAX_SIZE}}"
+        max-file: "${{LOG_MAX_FILE}}"
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     environment:
       TZ: ${{TZ}}
 {cf_env}    volumes:

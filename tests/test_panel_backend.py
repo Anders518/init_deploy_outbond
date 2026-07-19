@@ -12,9 +12,10 @@ from vpsdeploy.providers.dns.cloudflare import CloudflareDNSProvider
 from vpsdeploy.tasks import proxy_stack
 from vpsdeploy.tasks.proxy_stack import ProxyStackTask
 from vpsdeploy.templates.render import render_caddy, render_compose
+from vpsdeploy.templates.wg_easy import render_wg_easy_compose
 from vpsdeploy.tasks.node_config import NodeConfigTask, _anytls_subscription
 from vpsdeploy.core import runtime
-from vpsdeploy.tui import apply_core_config, apply_hardening_config, apply_sub2api_config, set_toml_value
+from vpsdeploy.tui import apply_core_config, apply_hardening_config, apply_sub2api_config, apply_wg_easy_config, set_toml_value
 from vpsdeploy.tasks.ipv6_connectivity import FileSnapshot
 from vpsdeploy.tasks.ufw import UFWTask
 from vpsdeploy.tasks import ufw
@@ -126,6 +127,42 @@ def test_xui_is_the_backward_compatible_default(tmp_path: Path) -> None:
     assert 'acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}' in caddy
     assert 'issuer acme' not in caddy
     assert 'issuer zerossl' not in caddy
+    assert compose.count('driver: json-file') == 2
+    assert compose.count('max-size: "${LOG_MAX_SIZE}"') == 2
+    assert 'caddy validate' not in compose  # exec-form healthcheck is rendered as a YAML list
+    assert 'test: ["CMD", "caddy", "validate"' in compose
+
+
+def test_docker_log_rotation_validation(tmp_path: Path) -> None:
+    config = base_config(tmp_path)
+    config['docker']['log_max_size'] = 'unlimited'
+
+    with pytest.raises(DeployError, match='log_max_size'):
+        validate_config(config)
+
+
+def test_wg_easy_compose_never_publishes_wireguard_udp() -> None:
+    compose = render_wg_easy_compose({}, initialize=True)
+
+    assert '51820:51820/udp' not in compose
+    assert '127.0.0.1:${WG_WEB_PORT}:51821/tcp' in compose
+    assert 'ipv4_address: ${WG_PROXY_ENDPOINT}' in compose
+    assert 'INIT_PASSWORD: ${WG_ADMIN_PASSWORD}' in compose
+
+
+def test_wg_easy_steady_compose_drops_bootstrap_password() -> None:
+    compose = render_wg_easy_compose({}, initialize=False)
+
+    assert 'INIT_PASSWORD' not in compose
+    assert 'INIT_ENABLED' not in compose
+
+
+def test_wg_easy_validation_rejects_public_web_ui(tmp_path: Path) -> None:
+    config = base_config(tmp_path)
+    config['wg_easy'] = {'enabled': True, 'web_bind': '0.0.0.0'}
+
+    with pytest.raises(DeployError, match='loopback'):
+        validate_config(config)
 
 
 def test_sui_backend_is_exclusive_and_receives_all_routes(tmp_path: Path) -> None:
@@ -312,6 +349,19 @@ def test_tui_hardening_wizard_updates_security_sections() -> None:
     assert '[hardening.fail2ban]\nenabled = true' in changed
     assert '[hardening.unattended_upgrades]\nenabled = true' in changed
     assert '[hardening.system]\nenable_sysctl = true' in changed
+
+
+def test_tui_wg_easy_wizard_keeps_endpoint_private() -> None:
+    changed = apply_wg_easy_config('[wg_easy]\nenabled = false\n', {
+        'enabled': True, 'web_port': 51821, 'wireguard_port': 51820,
+        'admin_username': 'operator', 'ipv4_cidr': '10.66.66.0/24',
+        'ipv6_cidr': 'fd42:66:66::/64',
+    })
+
+    assert '[wg_easy]\nenabled = true' in changed
+    assert 'wireguard_port = 51820' in changed
+    assert 'admin_password_mode = "generate"' in changed
+    assert 'web_bind' not in changed
 
 
 def test_tui_sub2api_wizard_never_persists_plaintext_password() -> None:

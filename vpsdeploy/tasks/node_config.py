@@ -530,6 +530,16 @@ class NodeConfigTask(Task):
         listen = run(['ss', '-H', '-ltn', f"sport = :{int(client['port'])}"], capture=True)
         if not listen.stdout.strip():
             raise DeployError('Managed node port is not listening')
+        subscription_url = str(client.get('subscription_url', '')).strip()
+        if subscription_url:
+            subscription = run([
+                'curl', '--fail', '--silent', '--show-error',
+                '--connect-timeout', '5', '--max-time', '20',
+                '--output', '/dev/null', subscription_url,
+            ], check=False, capture=True, redact_values={subscription_url})
+            if subscription.returncode != 0:
+                detail = (subscription.stderr or '').strip()
+                raise DeployError(f'Secure subscription endpoint verification failed: {detail}')
         fingerprint = hashlib.sha256(json.dumps(client, sort_keys=True).encode()).hexdigest()[:12]
         print(f"[node] {client['protocol']} configured; client fingerprint={fingerprint}")
 

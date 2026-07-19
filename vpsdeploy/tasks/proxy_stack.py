@@ -157,6 +157,8 @@ class ProxyStackTask(Task):
             f"CADDY_IMAGE={docker['caddy_image']}",
             f"PROXY_PORT={ports['proxy']}",
             f"PANEL_PUBLIC_PORT={ports['panel_public']}",
+            f"LOG_MAX_SIZE={docker.get('log_max_size', '10m')}",
+            f"LOG_MAX_FILE={int(docker.get('log_max_file', 3))}",
         ]
         for key, value in (tls.environment or {}).items():
             env.append(f'{key}={value}')
