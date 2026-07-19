@@ -80,6 +80,24 @@ def validate_config(config: dict[str, Any]) -> None:
     if backend == "s-ui" and tls_mode(config) != "acme_dns":
         raise DeployError('panel.backend="s-ui" requires panel.tls.mode="acme_dns" for a publicly trusted AnyTLS certificate')
 
+    wg_easy = config.get("wg_easy", {})
+    if not isinstance(wg_easy, dict):
+        raise DeployError("wg_easy must be a TOML table")
+    if bool(wg_easy.get("enabled", False)):
+        transport = str(wg_easy.get("transport", "anytls")).strip().lower()
+        if transport not in {"anytls", "direct"}:
+            raise DeployError('wg_easy.transport must be "anytls" or "direct"')
+        if not str(wg_easy.get("image", "ghcr.io/wg-easy/wg-easy:15")).strip():
+            raise DeployError("wg_easy.image cannot be empty")
+        validate_port(wg_easy.get("wireguard_port", 51820), "wg_easy.wireguard_port")
+        validate_port(wg_easy.get("ui_port", 51821), "wg_easy.ui_port")
+        validate_port(wg_easy.get("client_relay_port", 51820), "wg_easy.client_relay_port")
+        if transport == "anytls":
+            if backend != "s-ui":
+                raise DeployError('wg_easy.transport="anytls" requires panel.backend="s-ui"')
+            if not bool(node.get("enabled", True)):
+                raise DeployError('wg_easy.transport="anytls" requires node.enabled=true')
+
     for name in ("panel", "node"):
         if not str(domains.get(name, "")).strip():
             raise DeployError(f"domains.{name} cannot be empty")
@@ -94,6 +112,10 @@ def validate_config(config: dict[str, Any]) -> None:
     }
     if len(set(values.values())) != len(values):
         raise DeployError(f"Port conflict detected: {values}")
+    if bool(wg_easy.get("enabled", False)) and str(wg_easy.get("transport", "anytls")).strip().lower() == "direct":
+        wg_port = int(wg_easy.get("wireguard_port", 51820))
+        if wg_port in values.values():
+            raise DeployError("wg_easy.wireguard_port conflicts with a proxy-stack port")
 
     normalize_path(str(panel.get("path", "/")), "panel.path")
     normalize_path(str(panel.get("subscription_path", "/sub")), "panel.subscription_path")
