@@ -9,6 +9,7 @@ from vpsdeploy.tasks.prerequisites import PrerequisitesTask
 from vpsdeploy.tasks.ipv6_connectivity import IPv6ConnectivityTask
 from vpsdeploy.tasks.proxy_stack_recreate import ProxyStackTask
 from vpsdeploy.tasks.node_config import NodeConfigTask, NodeVerifyTask
+from vpsdeploy.tasks.wg_easy import WgEasyTask
 from vpsdeploy.tasks.ssh_hardening import SSHHardeningTask
 from vpsdeploy.tasks.ufw import UFWTask
 from vpsdeploy.tasks.sub2api import Sub2APITask
@@ -24,6 +25,7 @@ DEPLOY_TASKS = [
     ProxyStackTask(),
     NodeConfigTask(),
     NodeVerifyTask(),
+    WgEasyTask(),
     Sub2APITask(),
     SSHHardeningTask(),
     UFWTask(),
@@ -59,3 +61,4 @@ def update(context: DeploymentContext) -> None:
         run(["docker", "image", "prune", "-f"])
     NodeConfigTask().execute(context)
     NodeVerifyTask().execute(context)
+    WgEasyTask().execute(context)
