@@ -77,6 +77,13 @@ class UFWTask(Task):
             rules.append((current_ssh_port, 'tcp', 'vpsdeploy SSH transition'))
         if bool(ports.get('publish_proxy_udp', False)):
             rules.append((int(ports['proxy']), 'udp', 'vpsdeploy proxy UDP'))
+        wg_easy = context.config.get('wg_easy', {})
+        if (
+            isinstance(wg_easy, dict)
+            and bool(wg_easy.get('enabled', False))
+            and str(wg_easy.get('transport', 'anytls')).strip().lower() == 'direct'
+        ):
+            rules.append((int(wg_easy.get('wireguard_port', 51820)), 'udp', 'vpsdeploy wg-easy WireGuard'))
         sub2api = context.config.get('sub2api', {})
         if isinstance(sub2api, dict) and bool(sub2api.get('enabled', False)) and bool(sub2api.get('publish_port', False)):
             rules.append((int(sub2api.get('published_port', 8080)), 'tcp', 'vpsdeploy Sub2API'))
@@ -112,6 +119,13 @@ class UFWTask(Task):
         required.append(f"{int(ssh['new_port'] if ssh.get('enabled', False) else ssh.get('current_port', 22))}/tcp")
         if bool(ssh.get('enabled', False)) and bool(ssh.get('keep_current_port', True)):
             required.append(f"{int(ssh.get('current_port', 22))}/tcp")
+        wg_easy = context.config.get('wg_easy', {})
+        if (
+            isinstance(wg_easy, dict)
+            and bool(wg_easy.get('enabled', False))
+            and str(wg_easy.get('transport', 'anytls')).strip().lower() == 'direct'
+        ):
+            required.append(f"{int(wg_easy.get('wireguard_port', 51820))}/udp")
         missing = [rule for rule in required if not _has_rule(result.stdout, rule)]
         if missing:
             raise DeployError(f'UFW is missing required rules: {", ".join(missing)}')
