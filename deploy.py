@@ -97,6 +97,13 @@ def show_credentials(context: DeploymentContext) -> None:
             print(f"Private proxy endpoint: {data.get('proxy_endpoint', '')}:{data.get('wireguard_port', '')}/udp")
             print(f"Mihomo route fragment: {wg_dir / 'state/mihomo-route.yaml'}")
             print(f"Strict Mihomo WG profile: {wg_dir / 'state/mihomo-wg-gateway.yaml'}")
+            if data.get('ssh_forward_enabled'):
+                print(f"Host SSH over WireGuard: {data.get('ssh_endpoint', '')}")
+            print('\nConnection order')
+            print('1. Forward the Web UI over SSH and create/download a WireGuard client.')
+            print('2. Linux/gateways: start the strict Mihomo TUN before the system WireGuard client.')
+            print('3. Apple platforms: use an in-app WireGuard node chained after AnyTLS in one VPN/TUN.')
+            print('4. Confirm a recent handshake; do not expose the private UDP endpoint publicly.')
             print(f"\nSource: {wg_path}")
 
     if not found:

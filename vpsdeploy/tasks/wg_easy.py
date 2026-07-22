@@ -40,10 +40,17 @@ class WGEasyTask(Task):
             port = cfg.get(key, default)
             if not isinstance(port, int) or not 1 <= port <= 65535:
                 raise DeployError(f'wg_easy.{key} must be an integer between 1 and 65535')
+        ssh_port = cfg.get('ssh_forward_port', 4522)
+        if bool(cfg.get('ssh_forward_enabled', False)) and (
+            not isinstance(ssh_port, int) or not 1 <= ssh_port <= 65535
+        ):
+            raise DeployError('wg_easy.ssh_forward_port must be an integer between 1 and 65535')
         ipv4 = ipaddress.ip_network(str(cfg.get('ipv4_cidr', '10.66.66.0/24')), strict=False)
         ipv6 = ipaddress.ip_network(str(cfg.get('ipv6_cidr', 'fd42:66:66::/64')), strict=False)
         if ipv4.version != 4 or ipv6.version != 6:
             raise DeployError('wg_easy IPv4/IPv6 CIDRs have the wrong address family')
+        if ipv4.num_addresses < 4:
+            raise DeployError('wg_easy.ipv4_cidr must contain a usable server address')
         if str(cfg.get('admin_password_mode', 'generate')) not in {'generate', 'prompt', 'environment'}:
             raise DeployError('wg_easy.admin_password_mode must be generate, prompt, or environment')
 
@@ -69,7 +76,7 @@ class WGEasyTask(Task):
         for item in snapshot['files']:
             item.restore()
         if snapshot['existed'] and snapshot['running'] and (install / 'docker-compose.yml').is_file():
-            run(['docker', 'compose', 'up', '-d'], cwd=install, check=False)
+            run(['docker', 'compose', 'up', '-d', '--remove-orphans'], cwd=install, check=False)
 
     def _password(self, cfg: dict[str, Any], existing: str) -> tuple[str, bool]:
         if existing:
@@ -119,6 +126,14 @@ class WGEasyTask(Task):
         password, generated = self._password(cfg, str(existing.get('admin_password', '')))
         network_name = str(section(context.config, 'docker').get('network_name', 'proxy_stack'))
         endpoint = self._proxy_endpoint(network_name, str(existing.get('proxy_endpoint', '')))
+        network_result = run(['docker', 'network', 'inspect', network_name], capture=True)
+        network_data = json.loads(network_result.stdout)[0]
+        network_rows = network_data.get('IPAM', {}).get('Config', [])
+        gateway = next((str(row.get('Gateway', '')) for row in network_rows if row.get('Gateway') and ':' not in str(row.get('Gateway'))), '')
+        if not gateway:
+            raise DeployError(f'Docker network {network_name} has no IPv4 gateway')
+        ipv4_network = ipaddress.ip_network(str(cfg.get('ipv4_cidr', '10.66.66.0/24')), strict=False)
+        virtual_ssh_ip = str(next(ipv4_network.hosts()))
         admin = str(cfg.get('admin_username', 'admin'))
         env = {
             'WG_EASY_IMAGE': str(cfg.get('image', 'ghcr.io/wg-easy/wg-easy:15')),
@@ -130,6 +145,9 @@ class WGEasyTask(Task):
             'WG_DNS': str(cfg.get('dns', '1.1.1.1,8.8.8.8')),
             'WG_IPV4_CIDR': str(cfg.get('ipv4_cidr', '10.66.66.0/24')),
             'WG_IPV6_CIDR': str(cfg.get('ipv6_cidr', 'fd42:66:66::/64')),
+            'WG_SSH_VIRTUAL_IP': virtual_ssh_ip,
+            'WG_HOST_GATEWAY': gateway,
+            'WG_SSH_PORT': str(int(cfg.get('ssh_forward_port', 4522))),
             'PROXY_NETWORK': network_name,
             'LOG_MAX_SIZE': str(section(context.config, 'docker').get('log_max_size', '10m')),
             'LOG_MAX_FILE': str(int(section(context.config, 'docker').get('log_max_file', 3))),
@@ -162,6 +180,8 @@ class WGEasyTask(Task):
             'admin_username': admin, 'admin_password': password,
             'web_url': f"http://127.0.0.1:{int(cfg.get('web_port', 51821))}",
             'proxy_endpoint': endpoint, 'wireguard_port': int(cfg.get('wireguard_port', 51820)),
+            'ssh_forward_enabled': bool(cfg.get('ssh_forward_enabled', False)),
+            'ssh_endpoint': f'{virtual_ssh_ip}:{int(cfg.get("ssh_forward_port", 4522))}',
             'generated': generated,
         }
         write_file(credentials_path, json.dumps(credentials, indent=2), 0o600)
@@ -243,6 +263,31 @@ tun:
         proxy = run(['docker', 'inspect', '-f', f'{{{{index .NetworkSettings.Networks "{network_name}"}}}}', proxy_container], check=False, capture=True)
         if proxy.returncode != 0 or not proxy.stdout.strip():
             raise DeployError(f'{proxy_container} and wg-easy do not share the proxy network')
+        if bool(cfg.get('ssh_forward_enabled', False)):
+            ssh_port = int(cfg.get('ssh_forward_port', 4522))
+            ipv4_network = ipaddress.ip_network(str(cfg.get('ipv4_cidr', '10.66.66.0/24')), strict=False)
+            virtual_ip = str(next(ipv4_network.hosts()))
+            network_rows = run(['docker', 'network', 'inspect', network_name], capture=True)
+            network_data = json.loads(network_rows.stdout)[0]
+            gateway = next((str(row.get('Gateway', '')) for row in network_data.get('IPAM', {}).get('Config', []) if row.get('Gateway') and ':' not in str(row.get('Gateway'))), '')
+            for _ in range(15):
+                helper = run(['docker', 'inspect', '-f', '{{.State.Running}}', 'wg-easy-ssh-forward'], check=False, capture=True)
+                dnat = run([
+                    'docker', 'exec', 'wg-easy', 'iptables', '-t', 'nat', '-C', 'PREROUTING',
+                    '-i', 'wg0', '-s', str(ipv4_network), '-d', f'{virtual_ip}/32',
+                    '-p', 'tcp', '--dport', str(ssh_port), '-j', 'DNAT',
+                    '--to-destination', f'{gateway}:{ssh_port}',
+                ], check=False, capture=True)
+                if helper.returncode == 0 and helper.stdout.strip() == 'true' and dnat.returncode == 0:
+                    break
+                time.sleep(1)
+            else:
+                raise DeployError('wg-easy SSH forward helper or restricted DNAT rule is not ready')
+            reachable = run([
+                'docker', 'exec', 'wg-easy', 'nc', '-z', '-w', '2', gateway, str(ssh_port),
+            ], check=False, capture=True)
+            if reachable.returncode != 0:
+                raise DeployError(f'Host SSH is not reachable from wg-easy at {gateway}:{ssh_port}')
         state_dir = Path(str(cfg.get('install_dir', '/opt/wg-easy'))) / 'state'
         route_path = state_dir / 'mihomo-route.yaml'
         gateway_path = state_dir / 'mihomo-wg-gateway.yaml'
@@ -252,3 +297,5 @@ tun:
         if not gateway or any(row.get('udp') is not True for row in gateway.get('proxies', [])):
             raise DeployError('Strict Mihomo WG gateway profile does not enforce udp:true')
         print(f'[wg-easy] private endpoint {endpoint}:{int(cfg.get("wireguard_port", 51820))}/udp; no public UDP binding')
+        if bool(cfg.get('ssh_forward_enabled', False)):
+            print(f'[wg-easy] host SSH available only inside WireGuard at {next(ipaddress.ip_network(str(cfg.get("ipv4_cidr", "10.66.66.0/24")), strict=False).hosts())}:{int(cfg.get("ssh_forward_port", 4522))}')

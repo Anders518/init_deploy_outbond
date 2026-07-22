@@ -149,5 +149,7 @@ def validate_config(config: dict[str, Any]) -> None:
             raise DeployError('wg_easy.web_bind must be loopback')
         wg_port = validate_port(wg_easy.get('wireguard_port', 51820), 'wg_easy.wireguard_port')
         web_port = validate_port(wg_easy.get('web_port', 51821), 'wg_easy.web_port')
+        if bool(wg_easy.get('ssh_forward_enabled', False)):
+            validate_port(wg_easy.get('ssh_forward_port', 4522), 'wg_easy.ssh_forward_port')
         if wg_port == web_port or wg_port in values.values() or web_port in values.values():
             raise DeployError('wg_easy ports conflict with another configured service')

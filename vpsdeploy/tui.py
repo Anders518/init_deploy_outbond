@@ -99,7 +99,7 @@ def apply_hardening_config(text: str, values: dict[str, object]) -> str:
 
 
 def apply_wg_easy_config(text: str, values: dict[str, object]) -> str:
-    for key in ('enabled', 'web_port', 'wireguard_port', 'admin_username', 'ipv4_cidr', 'ipv6_cidr'):
+    for key in ('enabled', 'web_port', 'wireguard_port', 'admin_username', 'ipv4_cidr', 'ipv6_cidr', 'ssh_forward_enabled', 'ssh_forward_port'):
         if key in values:
             text = set_toml_value(text, 'wg_easy', key, values[key])
     if values.get('enabled'):
@@ -392,6 +392,8 @@ class DeploymentTUI:
                     admin_username=self._ask('wg-easy 管理员用户名', current.get('admin_username', 'admin')),
                     ipv4_cidr=self._ask('WireGuard IPv4 网段', current.get('ipv4_cidr', '10.66.66.0/24')),
                     ipv6_cidr=self._ask('WireGuard IPv6 网段', current.get('ipv6_cidr', 'fd42:66:66::/64')),
+                    ssh_forward_enabled=self._ask_bool('允许 WireGuard peers 通过隧道访问宿主 SSH', current.get('ssh_forward_enabled', False)),
+                    ssh_forward_port=int(self._ask('宿主 SSH 端口', current.get('ssh_forward_port', 4522))),
                 )
             changed = apply_wg_easy_config(self.config_path.read_text(encoding='utf-8'), values)
             code = self._shell(['deploy', '--task', 'wg-easy'], config_text=changed)

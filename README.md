@@ -374,6 +374,50 @@ ssh -p 4522 -L 51821:127.0.0.1:51821 deploy@SERVER
 
 然后打开 `http://127.0.0.1:51821`。使用 `credentials` 命令查看管理员凭据与私网 endpoint。移动平台通常无法同时运行两个 VPN/TUN 服务，因此该模式主要面向 Linux、Windows、macOS 与支持策略路由的路由器。
 
+首次连接先通过 SSH 转发进入 wg-easy：
+
+1. 在组件主机建立 SSH 隧道并保持该终端打开：
+
+   ```bash
+   ssh -p 4522 -N -L 51821:127.0.0.1:51821 deploy@SERVER
+   ```
+
+2. 浏览器访问 `http://127.0.0.1:51821`，登录后创建客户端，下载 WireGuard 的 `.conf` 文件。管理员账号密码可在服务器项目目录执行以下命令查看：
+
+   ```bash
+   sudo uv run --no-dev --frozen python deploy.py credentials
+   ```
+
+Linux、Windows 或支持多层策略路由的网关可将部署器生成的严格 Mihomo 配置复制到组件主机：
+
+   ```bash
+   scp -P 4522 deploy@SERVER:/opt/wg-easy/state/mihomo-wg-gateway.yaml ./mihomo-wg-gateway.yaml
+   ```
+
+以管理员/root 权限启动 Mihomo TUN。Linux 示例：
+
+   ```bash
+   sudo mihomo -d ./mihomo-wg-state -f ./mihomo-wg-gateway.yaml
+   ```
+
+保持 Mihomo 运行后再启动系统 WireGuard；它负责把 WireGuard 配置中的 Docker 私网 `Endpoint` 经 AnyTLS 转发到服务器，不能把这个 endpoint 改成服务器公网 IP。
+
+Apple 平台不要同时启动两个 VPN Network Extension。Loon 应把下载配置转换成内置 WireGuard 节点，并用代理链 `AnyTLS,WireGuard,udp=true` 在一个 TUN 内运行；覆盖网段规则指向该代理链。连接后检查服务端出现最新握手时间：
+
+   ```bash
+   sudo docker exec wg-easy wg show
+   ```
+
+如果没有握手，检查代理日志是否命中私网 endpoint 的 UDP 流量。若代理正常但仍无握手，再确认 AnyTLS 节点配置保留 `udp: true`，以及系统中没有另一套 VPN/TUN 抢占该私网路由。不要在云防火墙开放 `51820/UDP`，本方案有意禁止公网直连。
+
+需要通过覆盖网络访问宿主 SSH 时，设置 `wg_easy.ssh_forward_enabled = true` 和实际的 `ssh_forward_port`。部署器会在 wg-easy 网络命名空间内维护一条严格限定的 DNAT：仅接受来自 `wg0` 与 WireGuard IPv4 网段、目标为隧道服务器地址且端口等于 SSH 端口的连接，并转发到宿主 Docker 网关。它不会公开新的宿主端口。默认网段下使用：
+
+```bash
+ssh -p 4522 deploy@10.66.66.1
+```
+
+规则守护服务停止时会清理规则；部署或验证失败会随 wg-easy 任务自动回退。
+
 ## SSH 加固
 
 加固默认关闭。建议分两次执行，避免锁死 SSH。

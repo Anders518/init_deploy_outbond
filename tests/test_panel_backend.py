@@ -142,12 +142,16 @@ def test_docker_log_rotation_validation(tmp_path: Path) -> None:
 
 
 def test_wg_easy_compose_never_publishes_wireguard_udp() -> None:
-    compose = render_wg_easy_compose({}, initialize=True)
+    compose = render_wg_easy_compose({'ssh_forward_enabled': True}, initialize=True)
 
     assert '51820:51820/udp' not in compose
     assert '127.0.0.1:${WG_WEB_PORT}:51821/tcp' in compose
     assert 'ipv4_address: ${WG_PROXY_ENDPOINT}' in compose
     assert 'INIT_PASSWORD: ${WG_ADMIN_PASSWORD}' in compose
+    assert 'network_mode: "service:wg-easy"' in compose
+    assert '-i wg0 -s $${WG_IPV4_CIDR}' in compose
+    assert '--to-destination $${WG_HOST_GATEWAY}:$${WG_SSH_PORT}' in compose
+    assert '0.0.0.0:${WG_SSH_PORT}' not in compose
 
 
 def test_wg_easy_steady_compose_drops_bootstrap_password() -> None:
@@ -162,6 +166,18 @@ def test_wg_easy_validation_rejects_public_web_ui(tmp_path: Path) -> None:
     config['wg_easy'] = {'enabled': True, 'web_bind': '0.0.0.0'}
 
     with pytest.raises(DeployError, match='loopback'):
+        validate_config(config)
+
+
+def test_wg_easy_validation_rejects_invalid_ssh_forward_port(tmp_path: Path) -> None:
+    config = base_config(tmp_path)
+    config['wg_easy'] = {
+        'enabled': True,
+        'ssh_forward_enabled': True,
+        'ssh_forward_port': 70000,
+    }
+
+    with pytest.raises(DeployError, match='ssh_forward_port'):
         validate_config(config)
 
 
@@ -356,11 +372,14 @@ def test_tui_wg_easy_wizard_keeps_endpoint_private() -> None:
         'enabled': True, 'web_port': 51821, 'wireguard_port': 51820,
         'admin_username': 'operator', 'ipv4_cidr': '10.66.66.0/24',
         'ipv6_cidr': 'fd42:66:66::/64',
+        'ssh_forward_enabled': True, 'ssh_forward_port': 4522,
     })
 
     assert '[wg_easy]\nenabled = true' in changed
     assert 'wireguard_port = 51820' in changed
     assert 'admin_password_mode = "generate"' in changed
+    assert 'ssh_forward_enabled = true' in changed
+    assert 'ssh_forward_port = 4522' in changed
     assert 'web_bind' not in changed
 
 

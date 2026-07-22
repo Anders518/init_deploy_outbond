@@ -221,6 +221,8 @@ admin_password_env = "VPSDEPLOY_WG_EASY_ADMIN_PASSWORD"
 dns = "1.1.1.1,8.8.8.8"
 ipv4_cidr = "10.66.66.0/24"
 ipv6_cidr = "fd42:66:66::/64"
+ssh_forward_enabled = false
+ssh_forward_port = 4522
 readiness_timeout = 120
 
 [hardening]
